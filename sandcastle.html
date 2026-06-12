@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Château de sable — prototype</title>
+<style>
+  :root {
+    --ink: #1a1410;
+    --paper: #f3ece0;
+    --line: rgba(26,20,16,.14);
+    --accent: #c2693a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0d1418; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; width: 248px;
+    font: 13px/1.45 ui-monospace, "SF Mono", Menlo, monospace;
+    color: var(--ink); background: var(--paper);
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px 16px; user-select: none;
+    box-shadow: 0 8px 30px rgba(0,0,0,.35);
+  }
+  #ui h1 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+    margin: 0 0 4px; font-weight: 700; }
+  #ui .sub { font-size: 11px; opacity: .6; margin: 0 0 14px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 9px 0; }
+  .row label { opacity: .8; }
+  .row .val { font-variant-numeric: tabular-nums; opacity: .55; min-width: 34px; text-align: right; }
+  input[type=range] { width: 110px; accent-color: var(--accent); }
+  .btns { display: flex; gap: 6px; margin-top: 12px; }
+  button {
+    flex: 1; font: inherit; font-size: 12px; cursor: pointer;
+    padding: 7px 4px; border: 1px solid var(--line); border-radius: 7px;
+    background: #fff; color: var(--ink);
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  hr { border: none; border-top: 1px solid var(--line); margin: 13px 0; }
+  .help { font-size: 11px; opacity: .55; line-height: 1.5; }
+  .help b { opacity: .85; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <h1>Château de sable</h1>
+  <p class="sub">heightmap GPU · angle de repos · marée</p>
+
+  <div class="row"><label>Pinceau</label>
+    <input id="brushSize" type="range" min="0.01" max="0.12" step="0.005" value="0.04">
+    <span class="val" id="brushSizeV"></span></div>
+  <div class="row"><label>Force</label>
+    <input id="brushPow" type="range" min="0.05" max="1.0" step="0.05" value="0.4">
+    <span class="val" id="brushPowV"></span></div>
+  <div class="row"><label>Cohésion</label>
+    <input id="repose" type="range" min="0.08" max="1.2" step="0.02" value="0.5">
+    <span class="val" id="reposeV"></span></div>
+  <div class="btns">
+    <button id="towerBtn">Tour</button>
+    <button id="wallBtn">Muraille</button>
+    <button id="fosseBtn">Fossé</button>
+  </div>
+
+  <hr>
+
+  <div class="row"><label>Marée</label>
+    <input id="tide" type="range" min="-2" max="18" step="0.2" value="-1">
+    <span class="val" id="tideV"></span></div>
+  <div class="row"><label>Érosion</label>
+    <input id="erode" type="range" min="0" max="2" step="0.05" value="0.7">
+    <span class="val" id="erodeV"></span></div>
+  <div class="row"><label>Vagues</label>
+    <input id="wave" type="range" min="0" max="3" step="0.1" value="0.9">
+    <span class="val" id="waveV"></span></div>
+  <div class="row"><label>Cadence</label>
+    <input id="cad" type="range" min="0.3" max="3" step="0.1" value="1.5">
+    <span class="val" id="cadV"></span></div>
+  <div class="btns">
+    <button id="tideBtn">Marée montante</button>
+  </div>
+  <div class="btns">
+    <button id="pauseBtn">Pause</button>
+    <button id="resetBtn">Réinitialiser</button>
+  </div>
+
+  <hr>
+  <p class="help">
+    <b>Clic gauche</b> empile · <b>Maj+gauche</b> creuse<br>
+    <b>Tour</b> : un clic pose une tour · <b>Muraille / Fossé</b> : glisse pour tracer<br>
+    <b>Clic droit</b> tourne · <b>molette</b> zoome
+  </p>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------- config ----------
+const GRID = 256;          // résolution de la heightmap
+const WORLD = 100;         // taille du terrain (unités monde)
+const HSCALE = 1.0;        // les hauteurs sont stockées directement en unités monde
+
+// ---------- renderer / scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x0d1418, 1);
+document.body.appendChild(renderer.domElement);
+
+const gl = renderer.getContext();
+const canFloat = renderer.capabilities.isWebGL2 && gl.getExtension('EXT_color_buffer_float');
+const RT_TYPE = canFloat ? THREE.FloatType : THREE.HalfFloatType;
+// filtrage linéaire de la texture flottante (lisse l'affichage ; sans effet sur la sim
+// qui lit aux centres de texels) — repli en nearest si non supporté
+const canLinear = gl.getExtension('OES_texture_float_linear');
+const RT_FILTER = canLinear ? THREE.LinearFilter : THREE.NearestFilter;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 2000);
+camera.position.set(0, 62, 86);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 4, 0);
+controls.enableDamping = true;
+controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+
+// ---------- ciel (dôme dégradé) ----------
+const skyMat = new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false,
+  uniforms: {
+    uTop: { value: new THREE.Color(0x3f86d6) },   // bleu zénith
+    uHor: { value: new THREE.Color(0xd9ecf7) },   // pâle à l'horizon
+  },
+  vertexShader: `varying vec3 vDir;
+    void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `precision highp float; varying vec3 vDir; uniform vec3 uTop, uHor;
+    void main(){
+      float h = clamp(normalize(vDir).y * 0.5 + 0.5, 0.0, 1.0);
+      gl_FragColor = vec4(mix(uHor, uTop, smoothstep(0.45, 0.95, h)), 1.0);
+    }`,
+});
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(1500, 32, 16), skyMat));
+
+// ---------- ping-pong render targets (état = canal R : hauteur de sable) ----------
+function makeRT() {
+  return new THREE.WebGLRenderTarget(GRID, GRID, {
+    type: RT_TYPE, format: THREE.RGBAFormat,
+    minFilter: RT_FILTER, magFilter: RT_FILTER,
+    wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping,
+    depthBuffer: false, stencilBuffer: false,
+  });
+}
+let rtA = makeRT(), rtB = makeRT();
+// textures de FLUX d'eau (modèle de tuyaux) : R=flux gauche, G=droite, B=haut, A=bas
+let fluxA = makeRT(), fluxB = makeRT();
+renderer.setClearColor(0x000000, 0);
+for (const rt of [fluxA, fluxB]) { renderer.setRenderTarget(rt); renderer.clear(); }
+renderer.setRenderTarget(null);
+renderer.setClearColor(0x0d1418, 1);
+
+// scène GPGPU plein écran
+const simScene = new THREE.Scene();
+const simCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const simQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), null);
+simScene.add(simQuad);
+
+const fsVert = /* glsl */`
+  varying vec2 vUv;
+  void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
+`;
+
+// --- shader d'initialisation : plage en pente + bruit ---
+const initMat = new THREE.ShaderMaterial({
+  vertexShader: fsVert,
+  fragmentShader: /* glsl */`
+    varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5); }
+    float noise(vec2 p){
+      vec2 i = floor(p), f = fract(p);
+      float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
+      vec2 u = f*f*(3.-2.*f);
+      return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+    }
+    void main(){
+      // uv.y = 0 -> mer (avant) ; uv.y = 1 -> haut de plage (arrière)
+      float beach = smoothstep(0.05, 0.95, vUv.y) * 14.0;
+      float n = (noise(vUv * 7.0) - 0.5) * 1.2;
+      float h = max(0.0, beach + n);
+      gl_FragColor = vec4(h, 0.0, 0.0, 1.0);
+    }
+  `,
+});
+
+// déplacement de houle au point monde pos(xz), fonction de la hauteur d'eau locale (depth)
+// se propage VERS la plage (-z) ; grandit en eau peu profonde puis retombe (déferlement)
+const WAVE_GLSL = `
+  float waveDisp(vec2 pos, float depth){
+    float shoal = 1.0 - smoothstep(0.6, 7.0, depth);   // crêtes qui grandissent en approchant
+    float brk   = smoothstep(0.0, 0.8, depth);   // ... mais nulles en eau très mince
+    float a = uWaveAmp * (0.45 + 1.3 * shoal) * brk;
+    float t = uTime * uWaveSpeed;
+    return a * 0.60 * sin(dot(pos, vec2( 0.00, -0.45)) - t * 2.0)
+         + a * 0.40 * sin(dot(pos, vec2( 0.18, -0.55)) - t * 2.6 + 1.7)
+         + a * 0.25 * sin(dot(pos, vec2(-0.12, -0.70)) - t * 3.3 + 3.0);
+  }
+  float fhash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float fnoise(vec2 p){
+    vec2 i = floor(p), f = fract(p);
+    float a = fhash(i), b = fhash(i + vec2(1.0, 0.0)),
+          c = fhash(i + vec2(0.0, 1.0)), dd = fhash(i + vec2(1.0, 1.0));
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(a, b, u.x), mix(c, dd, u.x), u.y);
+  }
+  float distSeg(vec2 p, vec2 a, vec2 b){
+    vec2 pa = p - a, ba = b - a;
+    float t = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+    return length(pa - ba * t);
+  }
+`;
+
+// --- shader de simulation : pinceau + angle de repos + érosion directionnelle ---
+const simMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uPrev:     { value: null },
+    uHeight:   { value: null },           // état courant (réservé)
+    uTexel:    { value: 1.0 / GRID },
+    uBrush:    { value: new THREE.Vector2(-1, -1) },
+    uBrushR:   { value: 0.04 },
+    uBrushP:   { value: 0.0 },            // signé : + empile, - creuse, 0 inactif
+    uStampMode:{ value: 0.0 },            // 0 rien, 1 tour (point), 2 muraille (segment)
+    uStampA:   { value: new THREE.Vector2(0, 0) },
+    uStampB:   { value: new THREE.Vector2(0, 0) },
+    uStampRt:  { value: 0.025 },          // rayon du sommet plat
+    uStampRb:  { value: 0.045 },          // rayon de base
+    uStampH:   { value: 0.0 },            // hauteur absolue du sommet
+    uRepose:   { value: 0.5 },            // diff de hauteur max tolérée entre voisins
+    uErode:    { value: 0.7 },
+    uDt:       { value: 1.0 },
+    uHScale:   { value: HSCALE },
+    uWorld:    { value: WORLD },
+    uTideMean: { value: -1.0 },
+    uWaveAmp:  { value: 0.9 },
+    uWaveSpeed:{ value: 1.5 },
+    uTime:     { value: 0.0 },
+  },
+  vertexShader: fsVert,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uPrev, uHeight;
+    uniform float uTexel, uBrushR, uBrushP, uRepose, uErode, uDt;
+    uniform float uHScale, uWorld, uTideMean, uWaveAmp, uWaveSpeed, uTime;
+    uniform float uStampMode, uStampRt, uStampRb, uStampH;
+    uniform vec2 uBrush, uStampA, uStampB;
+    ${WAVE_GLSL}
+    void main(){
+      vec4 st = texture2D(uPrev, vUv);
+      float h0 = st.r, s0 = st.g;   // instantané (uPrev) : base commune à toutes les cellules
+      float d  = st.b;              // hauteur d'eau (gérée par les passes d'eau)
+      float h = h0, s = s0;
+
+      // --- pinceau (ajoute de la matière ; transportée dès la frame suivante) ---
+      if (uBrushP != 0.0) {
+        float dd = distance(vUv, uBrush);
+        float b = smoothstep(uBrushR, 0.0, dd);
+        h += b * uBrushP * uDt;
+      }
+
+      // --- tampon : tour (cône tronqué) ou muraille (segment), sommet PLAT à hauteur fixe ---
+      if (uStampMode > 0.5) {
+        float dd = (uStampMode < 1.5) ? distance(vUv, uStampA) : distSeg(vUv, uStampA, uStampB);
+        float target = (dd < uStampRt) ? uStampH
+                     : (dd < uStampRb) ? uStampH * (uStampRb - dd) / max(uStampRb - uStampRt, 1e-4)
+                     : -1e9;
+        h = max(h, target);        // bâtit jusqu'au gabarit, sans creuser l'existant
+      }
+
+      // voisins : .r = hauteur de lit, .g = sédiment (tous depuis uPrev)
+      vec2 e = vec2(uTexel, 0.0);
+      vec4 nL = texture2D(uPrev, vUv - e.xy);
+      vec4 nR = texture2D(uPrev, vUv + e.xy);
+      vec4 nD = texture2D(uPrev, vUv - e.yx);
+      vec4 nU = texture2D(uPrev, vUv + e.yx);
+      float hL = nL.r, hR = nR.r, hD = nD.r, hU = nU.r;
+      float dL = nL.b, dR = nR.b, dD = nD.b, dU = nU.b;
+      // diagonales (indispensables pour un tas conique et non pyramidal) — vec4 complet (lit + eau)
+      vec4 cLD = texture2D(uPrev, vUv + vec2(-uTexel, -uTexel));
+      vec4 cRD = texture2D(uPrev, vUv + vec2( uTexel, -uTexel));
+      vec4 cLU = texture2D(uPrev, vUv + vec2(-uTexel,  uTexel));
+      vec4 cRU = texture2D(uPrev, vUv + vec2( uTexel,  uTexel));
+
+      // --- angle de repos 8 voisins, CONSERVATIF ---
+      // Seuil calculé PAR ARÊTE à partir de l'eau MOYENNE des deux cellules : les deux
+      // voisins s'accordent sur l'échange (A perd exactement ce que B gagne). Sinon, sur
+      // une tour émergée, le trait d'eau (cellule sèche ↔ cellule immergée) crée de la
+      // matière en continu car chacune utilisait son propre seuil.
+      float subL = smoothstep(0.05, 1.2, 0.5 * (d + dL));
+      float subR = smoothstep(0.05, 1.2, 0.5 * (d + dR));
+      float subD = smoothstep(0.05, 1.2, 0.5 * (d + dD));
+      float subU = smoothstep(0.05, 1.2, 0.5 * (d + dU));
+      float TaL = mix(uRepose, max(uRepose * 0.2, 0.08), subL);
+      float TaR = mix(uRepose, max(uRepose * 0.2, 0.08), subR);
+      float TaD = mix(uRepose, max(uRepose * 0.2, 0.08), subD);
+      float TaU = mix(uRepose, max(uRepose * 0.2, 0.08), subU);
+      float subLD = smoothstep(0.05, 1.2, 0.5 * (d + cLD.b));
+      float subRD = smoothstep(0.05, 1.2, 0.5 * (d + cRD.b));
+      float subLU = smoothstep(0.05, 1.2, 0.5 * (d + cLU.b));
+      float subRU = smoothstep(0.05, 1.2, 0.5 * (d + cRU.b));
+      float TdLD = mix(uRepose, max(uRepose * 0.2, 0.08), subLD) * 1.4142;
+      float TdRD = mix(uRepose, max(uRepose * 0.2, 0.08), subRD) * 1.4142;
+      float TdLU = mix(uRepose, max(uRepose * 0.2, 0.08), subLU) * 1.4142;
+      float TdRU = mix(uRepose, max(uRepose * 0.2, 0.08), subRU) * 1.4142;
+      float delta = 0.0, a0;
+      a0 = h0-hL;    delta += (a0> TaL)?-(a0-TaL):((-a0>TaL)?(-a0-TaL):0.0);
+      a0 = h0-hR;    delta += (a0> TaR)?-(a0-TaR):((-a0>TaR)?(-a0-TaR):0.0);
+      a0 = h0-hD;    delta += (a0> TaD)?-(a0-TaD):((-a0>TaD)?(-a0-TaD):0.0);
+      a0 = h0-hU;    delta += (a0> TaU)?-(a0-TaU):((-a0>TaU)?(-a0-TaU):0.0);
+      a0 = h0-cLD.r; delta += 0.7071*((a0> TdLD)?-(a0-TdLD):((-a0>TdLD)?(-a0-TdLD):0.0));
+      a0 = h0-cRD.r; delta += 0.7071*((a0> TdRD)?-(a0-TdRD):((-a0>TdRD)?(-a0-TdRD):0.0));
+      a0 = h0-cLU.r; delta += 0.7071*((a0> TdLU)?-(a0-TdLU):((-a0>TdLU)?(-a0-TdLU):0.0));
+      a0 = h0-cRU.r; delta += 0.7071*((a0> TdRU)?-(a0-TdRU):((-a0>TdRU)?(-a0-TdRU):0.0));
+      h += delta * 0.14;
+
+      // lissage du lit immergé, CONSERVATIF : pondéré par l'eau de l'ARÊTE (symétrique),
+      // donc l'échange entre deux cellules se compense exactement (pas de gain au bord).
+      h += 0.03 * ( subL*(hL-h0) + subR*(hR-h0) + subD*(hD-h0) + subU*(hU-h0) );
+
+      // --- 1) arrachement : seulement là où il y a réellement de l'eau (hauteur d'eau > seuil) ---
+      if (d > 0.05) {
+        // plus fort en eau peu profonde (déferlement), faible en eau profonde
+        float subE = smoothstep(0.05, 0.4, d) * (1.0 - smoothstep(2.5, 7.0, d));
+        vec2 wpos = vec2((vUv.x - 0.5) * uWorld, (0.5 - vUv.y) * uWorld);
+        float surf = waveDisp(wpos, d);                        // déplacement de houle (±)
+        float energy = 0.85 + 0.3 * clamp(surf, 0.0, 1.0);
+        // surcroît "impact" : seulement sur les faces RAIDES tournées vers la mer
+        vec2 grad = vec2(hL - hR, hU - hD);
+        float slope = length(grad);
+        vec2 nH = grad / max(slope, 1e-4);
+        float expo   = max(0.0, dot(nH, vec2(0.0, 1.0)));      // 1 = face vers la houle
+        float impact = expo * smoothstep(0.4, 1.0, slope);     // n'agit que sur de vraies parois
+        float rate = 0.4 + 0.6 * impact;                       // nappe douce + creusement modéré
+        float detach = min(uErode * subE * energy * rate * uDt * 0.35, h);
+        h -= detach; s += detach; d += detach;                 // le vide laissé se remplit d'eau
+      }
+
+      // --- 2) transport : la suspension descend la pente (flux symétrique sur l'instantané) ---
+      float sL = nL.g, sR = nR.g, sD = nD.g, sU = nU.g;
+      float T = 0.04;                                   // coef de transport (stable < 0.125)
+      float sFlux = 0.0;
+      sFlux += (h0 - hL > 0.0) ? -T * s0 * min(h0 - hL, 2.0) : T * sL * min(hL - h0, 2.0);
+      sFlux += (h0 - hR > 0.0) ? -T * s0 * min(h0 - hR, 2.0) : T * sR * min(hR - h0, 2.0);
+      sFlux += (h0 - hD > 0.0) ? -T * s0 * min(h0 - hD, 2.0) : T * sD * min(hD - h0, 2.0);
+      sFlux += (h0 - hU > 0.0) ? -T * s0 * min(h0 - hU, 2.0) : T * sU * min(hU - h0, 2.0);
+      s = max(s + sFlux, 0.0);
+
+      // --- 3) dépôt doux et progressif (pas de vidage brutal -> pas de pics) ---
+      // sous l'eau : plafonné pour ne jamais faire émerger le sable (la barre reste immergée)
+      float dep = s * clamp(0.10 * uDt, 0.0, 1.0);
+      if (d >= 0.05) dep = min(dep, max(d - 0.1, 0.0));
+      dep = min(dep, s);
+      s -= dep; h += dep; d = max(d - dep, 0.0);            // le lit remonte -> l'eau recule
+
+      h = max(h, 0.0);
+      s = clamp(s, 0.0, 5.0);   // garde-fou anti-emballement
+      gl_FragColor = vec4(h, s, d, st.a);   // B = hauteur d'eau (évoluée ensuite par les passes d'eau)
+    }
+  `,
+});
+
+// --- eau dynamique (modèle de tuyaux) : flux entre cellules selon la différence de surface ---
+const fluxMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uState: { value: null }, uFlux: { value: null },
+    uTexel: { value: 1.0 / GRID }, uHScale: { value: HSCALE },
+    uDt: { value: 1.0 }, uFlowK: { value: 0.15 },
+  },
+  vertexShader: fsVert,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uState, uFlux;
+    uniform float uTexel, uHScale, uDt, uFlowK;
+    void main(){
+      vec4 c = texture2D(uState, vUv);
+      float H = c.r * uHScale + c.b;             // surface d'eau = lit + hauteur d'eau
+      vec4 f = texture2D(uFlux, vUv);            // flux sortants (L,R,U,D)
+      vec2 e = vec2(uTexel, 0.0);
+      vec4 cL = texture2D(uState, vUv - e.xy);
+      vec4 cR = texture2D(uState, vUv + e.xy);
+      vec4 cU = texture2D(uState, vUv + e.yx);
+      vec4 cD = texture2D(uState, vUv - e.yx);
+      float HL = cL.r*uHScale + cL.b, HR = cR.r*uHScale + cR.b;
+      float HU = cU.r*uHScale + cU.b, HD = cD.r*uHScale + cD.b;
+      float K = uFlowK * uDt, damp = 0.90;
+      float fL = max(0.0, f.r*damp + K*(H - HL));
+      float fR = max(0.0, f.g*damp + K*(H - HR));
+      float fU = max(0.0, f.b*damp + K*(H - HU));
+      float fD = max(0.0, f.a*damp + K*(H - HD));
+      // ne pas vider plus d'eau que disponible
+      float outflow = (fL + fR + fU + fD) * uDt;
+      float scale = (outflow > 1e-6) ? min(1.0, c.b / outflow) : 1.0;
+      gl_FragColor = vec4(fL, fR, fU, fD) * scale;
+    }
+  `,
+});
+
+// --- mise à jour de la hauteur d'eau : divergence du flux + marée imposée au bord mer ---
+const waterUpMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uState: { value: null }, uFlux: { value: null },
+    uTexel: { value: 1.0 / GRID }, uHScale: { value: HSCALE },
+    uDt: { value: 1.0 }, uTideMean: { value: -1.0 },
+    uWorld: { value: WORLD }, uTime: { value: 0.0 },
+    uWaveAmp: { value: 0.6 }, uWaveSpeed: { value: 1.0 },
+  },
+  vertexShader: fsVert,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uState, uFlux;
+    uniform float uTexel, uHScale, uDt, uTideMean;
+    uniform float uWorld, uTime, uWaveAmp, uWaveSpeed;
+    ${WAVE_GLSL}
+    void main(){
+      vec4 c = texture2D(uState, vUv);
+      vec4 f = texture2D(uFlux, vUv);
+      float outflow = f.r + f.g + f.b + f.a;
+      vec2 e = vec2(uTexel, 0.0);
+      float inL = texture2D(uFlux, vUv - e.xy).g;  // flux du voisin gauche vers la droite (= vers moi)
+      float inR = texture2D(uFlux, vUv + e.xy).r;
+      float inU = texture2D(uFlux, vUv + e.yx).a;
+      float inD = texture2D(uFlux, vUv - e.yx).b;
+      float d = c.b + uDt * (inL + inR + inU + inD - outflow);
+      d = clamp(d, 0.0, 60.0);
+      float bed = c.r * uHScale;
+      // forçage de marée : la mer OUVERTE (eau profonde) suit le niveau de marée -> montée
+      // uniforme, surface plate. L'eau peu profonde et les filets passant par une brèche
+      // ne sont PAS forcés -> ils se remplissent par écoulement (progressif).
+      float openSea = smoothstep(0.5, 2.5, d);
+      d += (uTideMean - (bed + d)) * 0.08 * openSea * uDt;
+      d = max(d, 0.0);
+      // source : bord mer (réservoir océan, 2 rangées) qui amorce et alimente le domaine
+      if (vUv.y < uTexel * 2.0) d = max(0.0, uTideMean - bed);
+      gl_FragColor = vec4(c.r, c.g, d, c.a);       // R, G, A inchangés ; B = nouvelle hauteur d'eau
+    }
+  `,
+});
+
+// shader de tampon pur : applique la géométrie (tour/muraille) SANS physique
+const stampMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uPrev:      { value: null },
+    uStampMode: { value: 0.0 },
+    uStampA:    { value: new THREE.Vector2(0, 0) },
+    uStampB:    { value: new THREE.Vector2(0, 0) },
+    uStampRt:   { value: 0.025 },
+    uStampRb:   { value: 0.045 },
+    uStampH:    { value: 0.0 },
+    uStampBase: { value: 0.0 },
+    uStampDig:  { value: 0.0 },
+  },
+  vertexShader: fsVert,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uPrev;
+    uniform float uStampMode, uStampRt, uStampRb, uStampH, uStampBase, uStampDig;
+    uniform vec2 uStampA, uStampB;
+    float distSeg(vec2 p, vec2 a, vec2 b){
+      vec2 pa = p - a, ba = b - a;
+      float t = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+      return length(pa - ba * t);
+    }
+    void main(){
+      vec4 st = texture2D(uPrev, vUv);
+      float h = st.r;
+      float dd = (uStampMode < 1.5) ? distance(vUv, uStampA) : distSeg(vUv, uStampA, uStampB);
+      float profile = (dd < uStampRt) ? 1.0
+                    : (dd < uStampRb) ? (uStampRb - dd) / max(uStampRb - uStampRt, 1e-4)
+                    : 0.0;
+      if (profile > 0.0) {
+        if (uStampDig > 0.5) {
+          float target = uStampBase - (uStampBase - uStampH) * profile;
+          h = min(h, target);
+        } else {
+          float target = uStampH * profile;
+          h = max(h, target);
+        }
+      }
+      h = max(h, 0.0);
+      gl_FragColor = vec4(h, st.g, st.b, st.a);
+    }
+  `,
+});
+
+function renderTo(mat, target) {
+  simQuad.material = mat;
+  renderer.setRenderTarget(target);
+  renderer.render(simScene, simCam);
+  renderer.setRenderTarget(null);
+}
+// init
+simQuad.material = initMat;
+renderer.setRenderTarget(rtA);
+renderer.render(simScene, simCam);
+renderer.setRenderTarget(null);
+
+// ---------- maillage de sable ----------
+const sandGeo = new THREE.PlaneGeometry(WORLD, WORLD, GRID, GRID);
+sandGeo.rotateX(-Math.PI / 2); // horizontal, y vers le haut
+const sandMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uHeight: { value: rtA.texture },
+    uTexel:  { value: 1.0 / GRID },
+    uHScale: { value: HSCALE },
+    uCell:   { value: WORLD / GRID },
+    uTideMean: { value: -1.0 },
+  },
+  vertexShader: /* glsl */`
+    uniform sampler2D uHeight; uniform float uHScale;
+    varying vec2 vUv; varying float vY;
+    void main(){
+      vUv = uv;
+      vec3 p = position;
+      float h = texture2D(uHeight, uv).r * uHScale;
+      p.y += h; vY = p.y;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    uniform sampler2D uHeight; uniform float uTexel, uHScale, uCell, uTideMean;
+    varying vec2 vUv; varying float vY;
+    void main(){
+      vec2 e = vec2(uTexel, 0.0);
+      float hL = texture2D(uHeight, vUv - e.xy).r;
+      float hR = texture2D(uHeight, vUv + e.xy).r;
+      float hD = texture2D(uHeight, vUv - e.yx).r;
+      float hU = texture2D(uHeight, vUv + e.yx).r;
+      vec3 n = normalize(vec3((hL - hR) * uHScale, 2.0 * uCell, (hD - hU) * uHScale));
+      vec3 L = normalize(vec3(0.4, 0.9, 0.25));
+      float diff = max(dot(n, L), 0.0);
+
+      float wet = smoothstep(uTideMean + 0.5, uTideMean - 2.5, vY); // sombre près/sous l'eau
+      vec3 dry = vec3(0.86, 0.77, 0.56);
+      vec3 wetc = vec3(0.50, 0.40, 0.28);
+      vec3 base = mix(dry, wetc, wet);
+      vec3 col = base * (0.34 + 0.66 * diff);
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+});
+scene.add(new THREE.Mesh(sandGeo, sandMat));
+
+// ---------- maillage d'eau ----------
+const waterGeo = new THREE.PlaneGeometry(WORLD, WORLD, GRID, GRID);
+waterGeo.rotateX(-Math.PI / 2);
+const waterMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false,
+  polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+  uniforms: {
+    uHeight:   { value: rtA.texture },
+    uHScale:   { value: HSCALE },
+    uWorld:    { value: WORLD },
+    uTideMean: { value: -1.0 },
+    uWaveAmp:  { value: 0.9 },
+    uWaveSpeed:{ value: 1.5 },
+    uTime:     { value: 0.0 },
+  },
+  vertexShader: /* glsl */`
+    uniform sampler2D uHeight;
+    uniform float uHScale, uWaveAmp, uWaveSpeed, uTime, uTideMean;
+    varying vec2 vUv; varying vec2 vWorld; varying float vDepth;
+    ${WAVE_GLSL}
+    void main(){
+      vUv = uv;
+      vec3 p = position;
+      vWorld = p.xz;
+      vec4 c = texture2D(uHeight, uv);
+      float bed = c.r * uHScale;
+      float d = c.b;
+      // --- nappe de ressac (purement VISUELLE, aucune masse d'eau créée) ---
+      // film mince au-dessus du sable, seulement à proximité d'eau réelle (taps
+      // voisins), dont l'extension suit la phase de la houle : la langue monte
+      // avec la vague et se retire SANS RIEN laisser (elle n'existe pas en masse).
+      float T = ${(1.0 / GRID).toFixed(6)};
+      float prox = d;
+      prox = max(prox, texture2D(uHeight, uv + vec2( 0.0, -3.0*T)).b);
+      prox = max(prox, texture2D(uHeight, uv + vec2( 0.0, -6.0*T)).b);
+      prox = max(prox, texture2D(uHeight, uv + vec2( 0.0,  3.0*T)).b);
+      prox = max(prox, texture2D(uHeight, uv + vec2( 3.0*T, 0.0)).b);
+      prox = max(prox, texture2D(uHeight, uv + vec2(-3.0*T, 0.0)).b);
+      prox = max(prox, texture2D(uHeight, uv + vec2( 6.0*T, 0.0)).b);
+      prox = max(prox, texture2D(uHeight, uv + vec2(-6.0*T, 0.0)).b);
+      float pw = smoothstep(0.15, 0.5, prox);            // il faut de l'eau réelle à côté
+      float lvl = uTideMean + waveDisp(p.xz, 0.9) * 1.5; // niveau instantané (marée + houle)
+      float film = clamp((lvl - bed) * 0.6, 0.0, 0.22) * pw;
+      float dEff = max(d, film);
+      vDepth = dEff;
+      p.y = max(bed + dEff + waveDisp(p.xz, dEff), bed); // surface = lit + eau + houle, jamais sous le lit
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    uniform sampler2D uHeight;
+    uniform float uHScale, uWorld, uWaveAmp, uWaveSpeed, uTime;
+    varying vec2 vUv; varying vec2 vWorld; varying float vDepth;
+    ${WAVE_GLSL}
+    void main(){
+      vec4 c = texture2D(uHeight, vUv);
+      float d = vDepth;                               // épaisseur effective (eau réelle OU film de ressac)
+      if (d < 0.015) discard;                         // seuil minimal (évite le bruit)
+      float edge = smoothstep(0.015, 0.6, d);         // fond translucide en eau mince -> bord net mais doux
+      float surf = c.r * uHScale + d + waveDisp(vWorld, d);
+
+      // normale de la surface d'eau (différences finies)
+      float epsW = 0.7, epsU = 0.7 / uWorld;
+      vec4 cX = texture2D(uHeight, vUv + vec2(epsU, 0.0));
+      vec4 cZ = texture2D(uHeight, vUv + vec2(0.0, -epsU));
+      float sX = cX.r*uHScale + cX.b + waveDisp(vWorld + vec2(epsW, 0.0), cX.b);
+      float sZ = cZ.r*uHScale + cZ.b + waveDisp(vWorld + vec2(0.0, epsW), cZ.b);
+      vec3 nrm = normalize(vec3(surf - sX, epsW, surf - sZ));
+
+      vec3 L = normalize(vec3(0.4, 0.9, 0.25));
+      float diff = max(dot(nrm, L), 0.0);
+      float fres = pow(1.0 - max(nrm.y, 0.0), 3.0);   // crêtes plus claires
+      // écume : bande de surf au trait de côte + mousse de crête, motif animé vers la plage
+      float shore = smoothstep(1.6, 0.0, d);                       // zone de déferlement
+      vec2 fc = vWorld * 0.16 + vec2(0.0, uTime * 1.1);            // défile vers le rivage
+      float fn = 0.6 * fnoise(fc) + 0.4 * fnoise(fc * 2.3 + 7.0);
+      float streak = smoothstep(0.45, 0.85, fn + shore * 0.25);    // traînées d'écume
+      float crest = smoothstep(0.25, 0.6, 1.0 - nrm.y);            // mousse sur les faces de vagues
+      float foam = clamp(shore * (0.4 + 0.8 * streak) + crest * 0.25, 0.0, 1.0);
+
+      vec3 shallow = vec3(0.30, 0.62, 0.66);
+      vec3 deep    = vec3(0.04, 0.22, 0.36);
+      vec3 col = mix(shallow, deep, clamp(d / 8.0, 0.0, 1.0));
+      col += diff * 0.16;
+      col = mix(col, vec3(0.72, 0.86, 0.92), fres * 0.5);
+      col = mix(col, vec3(1.0), foam * 0.8);
+      float a = clamp(d * 0.6 + 0.3, 0.3, 0.92) * edge;
+      a = max(a, foam * edge * 0.9);                               // l'écume reste visible en eau mince
+      gl_FragColor = vec4(col, a);
+    }
+  `,
+});
+scene.add(new THREE.Mesh(waterGeo, waterMat));
+
+// ---------- interaction pinceau ----------
+const raycaster = new THREE.Raycaster();
+const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const ndc = new THREE.Vector2();
+const hit = new THREE.Vector3();
+const readBuf = new Float32Array(4);
+let painting = false, digging = false, lastPointer = null;
+let tool = 'paint', wallActive = false, wallPoints = [], pendingTower = null;
+
+// overlay 2D pour la prévisualisation du tracé de muraille
+const previewCanvas = document.createElement('canvas');
+previewCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;';
+previewCanvas.width = innerWidth; previewCanvas.height = innerHeight;
+document.body.appendChild(previewCanvas);
+const previewCtx = previewCanvas.getContext('2d');
+
+function clearPreview() { previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height); }
+
+function drawPreview(pts) {
+  clearPreview();
+  if (pts.length < 2) return;
+  previewCtx.save();
+  previewCtx.strokeStyle = 'rgba(255,220,120,0.85)';
+  previewCtx.lineWidth = 3;
+  previewCtx.lineJoin = 'round';
+  previewCtx.lineCap = 'round';
+  previewCtx.setLineDash([6, 5]);
+  previewCtx.beginPath();
+  previewCtx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) previewCtx.lineTo(pts[i].x, pts[i].y);
+  previewCtx.stroke();
+  previewCtx.restore();
+}
+
+// lissage de Chaikin (3 passes -> courbe douce)
+function chaikin(pts, iterations = 3) {
+  let p = pts;
+  for (let k = 0; k < iterations; k++) {
+    const n = [p[0]];
+    for (let i = 0; i < p.length - 1; i++) {
+      n.push([p[i][0] * 0.75 + p[i+1][0] * 0.25, p[i][1] * 0.75 + p[i+1][1] * 0.25]);
+      n.push([p[i][0] * 0.25 + p[i+1][0] * 0.75, p[i][1] * 0.25 + p[i+1][1] * 0.75]);
+    }
+    n.push(p[p.length - 1]);
+    p = n;
+  }
+  return p;
+}
+
+function buildPathFromPoints(screenPts, cfg, dig) {
+  if (screenPts.length < 2) return;
+  const uvPts = screenPts.map(p => surfaceUvFromPointer(p.x, p.y)).filter(Boolean);
+  if (uvPts.length < 2) return;
+  const smoothed = chaikin(uvPts, 3);
+  const MIN_DIST = 0.003;
+  const filtered = [smoothed[0]];
+  for (let i = 1; i < smoothed.length; i++) {
+    const prev = filtered[filtered.length - 1];
+    const dx = smoothed[i][0] - prev[0], dy = smoothed[i][1] - prev[1];
+    if (Math.sqrt(dx*dx + dy*dy) >= MIN_DIST) filtered.push(smoothed[i]);
+  }
+  const baseHeights = filtered.map(pt => heightAtUv(pt[0], pt[1]));
+  stampMat.uniforms.uStampMode.value = 2;
+  stampMat.uniforms.uStampRt.value = cfg.rt;
+  stampMat.uniforms.uStampRb.value = cfg.rb;
+  stampMat.uniforms.uStampDig.value = dig ? 1.0 : 0.0;
+  for (let i = 0; i < filtered.length - 1; i++) {
+    const a = filtered[i], b = filtered[i + 1];
+    stampMat.uniforms.uPrev.value = rtA.texture;
+    stampMat.uniforms.uStampA.value.set(a[0], a[1]);
+    stampMat.uniforms.uStampB.value.set(b[0], b[1]);
+    stampMat.uniforms.uStampH.value  = dig ? Math.max(0, baseHeights[i] - cfg.depth)
+                                           : baseHeights[i] + cfg.H;
+    stampMat.uniforms.uStampBase.value = baseHeights[i];
+    renderTo(stampMat, rtB); [rtA, rtB] = [rtB, rtA];
+  }
+  stampMat.uniforms.uStampMode.value = 0;
+  stampMat.uniforms.uStampDig.value  = 0.0;
+}
+// gabarits (rayons en uv, hauteurs en unités monde, relatives au sol)
+const TOWER = { rt: 0.026, rb: 0.05,  H: 8 };
+const WALL  = { rt: 0.010, rb: 0.020, H: TOWER.H * (2 / 3) };
+const MOAT  = { rt: 0.012, rb: 0.024, depth: TOWER.H * (2 / 3) };
+
+// hauteur du sable sous une coordonnée uv (lecture d'un texel sur le GPU)
+function heightAtUv(u, v) {
+  const px = Math.min(GRID - 1, Math.max(0, Math.floor(u * GRID)));
+  const py = Math.min(GRID - 1, Math.max(0, Math.floor(v * GRID)));
+  try {
+    renderer.readRenderTargetPixels(rtA, px, py, 1, 1, readBuf);
+    return readBuf[0] * HSCALE;
+  } catch (e) { return 0; }
+}
+
+// projette le curseur sur la SURFACE du sable (corrige le décalage en vue inclinée)
+function surfaceUvFromPointer(cx, cy) {
+  ndc.x = (cx / innerWidth) * 2 - 1;
+  ndc.y = -(cy / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(ndc, camera);
+  let h = 0, res = null;
+  for (let i = 0; i < 3; i++) {           // raffine vers la vraie altitude
+    groundPlane.constant = -h;            // plan horizontal à y = h
+    if (!raycaster.ray.intersectPlane(groundPlane, hit)) return null;
+    const u = (hit.x + WORLD / 2) / WORLD;
+    const v = (WORLD / 2 - hit.z) / WORLD;   // rotateX(-90°) : uv.y ∝ -z
+    res = [Math.min(1, Math.max(0, u)), Math.min(1, Math.max(0, v))];
+    h = heightAtUv(res[0], res[1]);
+  }
+  return res;
+}
+
+renderer.domElement.addEventListener('pointerdown', (ev) => {
+  if (ev.button !== 0 || paused) return;   // gauche (sauf en pause -> caméra)
+  if (tool === 'tower') {
+    const uv = surfaceUvFromPointer(ev.clientX, ev.clientY);
+    if (uv) pendingTower = { mode: 1, a: uv, b: uv,
+      rt: TOWER.rt, rb: TOWER.rb, h: heightAtUv(uv[0], uv[1]) + TOWER.H };
+  } else if (tool === 'wall' || tool === 'fosse') {
+    wallActive = true; wallPoints = [{ x: ev.clientX, y: ev.clientY }];
+  } else {
+    painting = true; digging = ev.shiftKey;
+    lastPointer = { x: ev.clientX, y: ev.clientY };
+  }
+});
+addEventListener('pointerup', () => {
+  if (wallActive && wallPoints.length >= 2) {
+    if (tool === 'fosse') buildPathFromPoints(wallPoints, MOAT, true);
+    else                  buildPathFromPoints(wallPoints, WALL, false);
+  }
+  painting = false; wallActive = false; wallPoints = []; lastPointer = null;
+  clearPreview();
+});
+renderer.domElement.addEventListener('pointermove', (ev) => {
+  if (!painting && !wallActive) return;
+  digging = ev.shiftKey;
+  lastPointer = { x: ev.clientX, y: ev.clientY };
+  if (wallActive) {
+    const last = wallPoints[wallPoints.length - 1];
+    const dx = ev.clientX - last.x, dy = ev.clientY - last.y;
+    if (dx*dx + dy*dy > 100) {
+      wallPoints.push({ x: ev.clientX, y: ev.clientY });
+      drawPreview(wallPoints);
+    }
+  }
+});
+renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// ---------- UI ----------
+let brushPow = 0.4, tideRising = false;
+let tideMean = -1.0, waveAmp = 0.9, waveSpeed = 1.5;
+let paused = false, simTime = 0;
+const $ = (id) => document.getElementById(id);
+function bind(id, fn, fmt = (v) => v.toFixed(2)) {
+  const el = $(id), out = $(id + 'V');
+  const upd = () => { const v = parseFloat(el.value); if (out) out.textContent = fmt(v); fn(v); };
+  el.addEventListener('input', upd); upd();
+}
+bind('brushSize', (v) => simMat.uniforms.uBrushR.value = v);
+bind('brushPow',  (v) => brushPow = v);
+bind('repose',    (v) => simMat.uniforms.uRepose.value = v);
+bind('tide',      (v) => { tideRising = false; $('tideBtn').classList.remove('on');
+                           tideMean = v; }, (v) => v.toFixed(1));
+bind('erode',     (v) => simMat.uniforms.uErode.value = v);
+bind('wave',      (v) => waveAmp = v, (v) => v.toFixed(1));
+bind('cad',       (v) => waveSpeed = v, (v) => v.toFixed(1));
+
+$('tideBtn').addEventListener('click', () => {
+  tideRising = !tideRising;
+  $('tideBtn').classList.toggle('on', tideRising);
+});
+$('resetBtn').addEventListener('click', () => {
+  simQuad.material = initMat;
+  renderer.setRenderTarget(rtA);
+  renderer.render(simScene, simCam);
+  renderer.setRenderTarget(null);
+  // remet aussi le flux d'eau à zéro
+  renderer.setClearColor(0x000000, 0);
+  for (const rt of [fluxA, fluxB]) { renderer.setRenderTarget(rt); renderer.clear(); }
+  renderer.setRenderTarget(null);
+  renderer.setClearColor(0x0d1418, 1);
+  $('tide').value = -1; $('tide').dispatchEvent(new Event('input'));
+});
+$('pauseBtn').addEventListener('click', () => {
+  paused = !paused;
+  $('pauseBtn').classList.toggle('on', paused);
+  $('pauseBtn').textContent = paused ? 'Reprendre' : 'Pause';
+  painting = false; lastPointer = null;
+  // en pause, le clic gauche tourne la caméra (le pinceau est gelé) ; sinon il peint
+  controls.mouseButtons.LEFT = paused ? THREE.MOUSE.ROTATE : null;
+});
+
+// outils de construction : clic sur un bouton (re-clic = retour au pinceau)
+function setTool(t) {
+  tool = (tool === t) ? 'paint' : t;
+  painting = false; wallActive = false; pendingTower = null;
+  $('towerBtn').classList.toggle('on', tool === 'tower');
+  $('wallBtn').classList.toggle('on', tool === 'wall');
+  $('fosseBtn').classList.toggle('on', tool === 'fosse');
+}
+$('towerBtn').addEventListener('click', () => setTool('tower'));
+$('wallBtn').addEventListener('click', () => setTool('wall'));
+$('fosseBtn').addEventListener('click', () => setTool('fosse'));
+
+// ---------- boucle ----------
+const clock = new THREE.Clock();
+function setTideMean(v) {
+  tideMean = Math.max(-2, Math.min(18, v));
+  $('tide').value = tideMean.toFixed(1); $('tideV').textContent = tideMean.toFixed(1);
+}
+function frame() {
+  const realDt = Math.min(clock.getDelta(), 0.05);
+  const dt = paused ? 0.0 : realDt;
+  simTime += dt;
+  const t = simTime;
+  const dtW = Math.min(dt * 60.0, 1.0);   // dt borné pour la stabilité de l'eau
+  simMat.uniforms.uDt.value = dt * 60.0;
+  fluxMat.uniforms.uDt.value = dtW;
+  waterUpMat.uniforms.uDt.value = dtW;
+
+  if (tideRising && !paused) setTideMean(tideMean + dt * 0.6);   // la marée monte
+
+  // paramètres partagés (houle + marée)
+  for (const m of [simMat, sandMat, waterMat, waterUpMat]) {
+    if (m.uniforms.uTideMean)  m.uniforms.uTideMean.value  = tideMean;
+    if (m.uniforms.uWaveAmp)   m.uniforms.uWaveAmp.value   = waveAmp;
+    if (m.uniforms.uWaveSpeed) m.uniforms.uWaveSpeed.value = waveSpeed;
+    if (m.uniforms.uTime)      m.uniforms.uTime.value      = t;
+  }
+
+  if (!paused) {
+    // pinceau : une seule application par frame, projetée sur la surface du sable
+    if (painting && lastPointer) {
+      const uv = surfaceUvFromPointer(lastPointer.x, lastPointer.y);
+      if (uv) {
+        simMat.uniforms.uBrush.value.set(uv[0], uv[1]);
+        simMat.uniforms.uBrushP.value = (digging ? -1 : 1) * brushPow;
+      }
+    }
+
+    // tampon tour (un clic)
+    if (pendingTower) {
+      const stamp = pendingTower; pendingTower = null;
+      simMat.uniforms.uStampMode.value = stamp.mode;
+      simMat.uniforms.uStampA.value.set(stamp.a[0], stamp.a[1]);
+      simMat.uniforms.uStampB.value.set(stamp.b[0], stamp.b[1]);
+      simMat.uniforms.uStampRt.value = stamp.rt;
+      simMat.uniforms.uStampRb.value = stamp.rb;
+      simMat.uniforms.uStampH.value = stamp.h;
+    } else {
+      simMat.uniforms.uStampMode.value = 0;
+    }
+
+    // 1) terrain : lit + sédiment (lit la hauteur d'eau pour l'érosion)
+    simMat.uniforms.uPrev.value = rtA.texture;
+    simMat.uniforms.uHeight.value = rtA.texture;
+    renderTo(simMat, rtB); [rtA, rtB] = [rtB, rtA];
+    simMat.uniforms.uBrushP.value = 0; // le pinceau ne dure qu'une frame
+    simMat.uniforms.uStampMode.value = 0; // le tampon ne dure qu'une frame
+
+    // 2) eau : sous-étapes flux -> hauteur (écoulement réel entre cellules)
+    for (let i = 0; i < 4; i++) {
+      fluxMat.uniforms.uState.value = rtA.texture;
+      fluxMat.uniforms.uFlux.value = fluxA.texture;
+      renderTo(fluxMat, fluxB); [fluxA, fluxB] = [fluxB, fluxA];
+
+      waterUpMat.uniforms.uState.value = rtA.texture;
+      waterUpMat.uniforms.uFlux.value = fluxA.texture;
+      renderTo(waterUpMat, rtB); [rtA, rtB] = [rtB, rtA];
+    }
+  }
+
+  // l'état courant est dans rtA
+  sandMat.uniforms.uHeight.value = rtA.texture;
+  waterMat.uniforms.uHeight.value = rtA.texture;
+
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+frame();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  previewCanvas.width = innerWidth; previewCanvas.height = innerHeight;
+});
+</script>
+</body>
+</html>
