@@ -144,6 +144,25 @@
             #orientationOverlay { display: flex; }
             #gameContainer { display: none; }
         }
+
+        #terrainContent {
+            background: #1e1b29; border: 3px solid #ffff00; padding: 20px;
+            border-radius: 12px; box-shadow: 0 0 25px rgba(0,0,0,.7);
+            box-sizing: border-box; width: 92%; max-width: 620px;
+        }
+        #terrainContent h3 { margin: 0 0 16px; color: #ffff00; text-align: center; font-size: 22px; }
+        .terrain-cards { display: flex; gap: 10px; }
+        .terrain-card {
+            flex: 1; background: #2e1a47; border: 3px solid #4b5563; border-radius: 10px;
+            min-width: 0; padding: 8px; cursor: pointer; text-align: center;
+            transition: border-color .15s, transform .1s;
+        }
+        .terrain-card:hover { transform: translateY(-2px); }
+        .terrain-card.selected { border-color: #ffff00; box-shadow: 0 0 14px rgba(255,255,0,.35); }
+        .terrain-card .t-prev { position: static; width: 100%; max-width: 100%; height: auto; border-radius: 6px; display: block; }
+        .terrain-card .t-name { font-weight: bold; font-size: 16px; margin-top: 8px; }
+        .terrain-card .t-desc { font-size: 11px; opacity: .72; margin-top: 4px; line-height: 1.35; min-height: 28px; }
+        .terrain-badge { display: inline-block; font-size: 10px; background: #4d7c0f; color: #fff; padding: 2px 6px; border-radius: 4px; margin-top: 6px; }
     </style>
 </head>
 <body>
@@ -218,6 +237,31 @@
             <button id="saveSettingsBtn" class="action-btn">Valider</button>
         </div>
     </div>
+
+    <div id="terrainModal" class="modal-overlay" style="display:flex;">
+        <div id="terrainContent">
+            <h3 id="terrainTitle">Choix du terrain</h3>
+            <div class="terrain-cards">
+                <div class="terrain-card selected" id="cardLandscape">
+                    <canvas class="t-prev" width="240" height="120"></canvas>
+                    <div class="t-name" id="tNameLandscape">Paysage</div>
+                    <div class="t-desc" id="tDescLandscape">Collines verdoyantes.</div>
+                    <div class="terrain-badge" id="tBadge">Par défaut</div>
+                </div>
+                <div class="terrain-card" id="cardIndustrial">
+                    <canvas class="t-prev" width="240" height="120"></canvas>
+                    <div class="t-name" id="tNameIndustrial">Industriel</div>
+                    <div class="t-desc" id="tDescIndustrial">Blocs métalliques mouvants.</div>
+                </div>
+                <div class="terrain-card" id="cardCave">
+                    <canvas class="t-prev" width="240" height="120"></canvas>
+                    <div class="t-name" id="tNameCave">Grotte</div>
+                    <div class="t-desc" id="tDescCave">Plafond rocheux, stalactites et stalagmites.</div>
+                </div>
+            </div>
+            <button id="playBtn" class="action-btn" style="margin-top:18px;">Jouer</button>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -234,10 +278,10 @@ const ctx = mainCanvas.getContext('2d');
 
 const i18n = {
     fr: {
-        menuTitle: "Configuration", optBonus: "Activer les bonus :", optPower: "Puissance max du tir :", optWind: "Activer le vent :", optWindPower: "Puissance max du vent :", optBouncing: "Côtés rebondissants :", optLang: "Langue :", btnValidate: "Valider", btnNextRound: "Manche Suivante", btnNewMatch: "Nouvelle Partie", windDisabled: "Vent : Désactivé", windCalm: "Vent : Calme", windLabel: "Vent : ", bonusLabel: "Bonus : ", bonusNone: "Aucun", bonusTriggered: "Déclenché !", bonusOpt1: "🟢 Tir Multiple (x3)", bonusOpt2: "🔴 Méga Tir (+50%)", bonusOpt3: "🔵 Bouclier (Destructeur)", p1Name: "Joueur 1 (Rouge) : ", p2Name: "Joueur 2 (Bleu) : ", matchOver: "Match Terminé !", matchOverMsg: "Le Joueur {winner} remporte la partie avec 5 points !", hitTitle: "Touché !", hitMsg: "Le Joueur {loser} a été touché !<br><br><strong>+1 point</strong> pour le Joueur {winner}.", orientationNotice: "🔄 Veuillez tourner votre appareil en mode Paysage pour jouer !"
+        menuTitle: "Configuration", optBonus: "Activer les bonus :", optPower: "Puissance max du tir :", optWind: "Activer le vent :", optWindPower: "Puissance max du vent :", optBouncing: "Côtés rebondissants :", optLang: "Langue :", btnValidate: "Valider", btnNextRound: "Manche Suivante", btnNewMatch: "Nouvelle Partie", windDisabled: "Vent : Désactivé", windCalm: "Vent : Calme", windLabel: "Vent : ", bonusLabel: "Bonus : ", bonusNone: "Aucun", bonusTriggered: "Déclenché !", bonusOpt1: "🟢 Tir Multiple (x3)", bonusOpt2: "🔴 Méga Tir (+50%)", bonusOpt3: "🔵 Bouclier (Destructeur)", p1Name: "Joueur 1 (Rouge) : ", p2Name: "Joueur 2 (Bleu) : ", matchOver: "Match Terminé !", matchOverMsg: "Le Joueur {winner} remporte la partie avec 5 points !", hitTitle: "Touché !", hitMsg: "Le Joueur {loser} a été touché !<br><br><strong>+1 point</strong> pour le Joueur {winner}.", orientationNotice: "🔄 Veuillez tourner votre appareil en mode Paysage pour jouer !", terrainTitle: "Choix du terrain", tLandscape: "Paysage", tIndustrial: "Industriel", tLandscapeDesc: "Collines verdoyantes, le terrain classique.", tIndustrialDesc: "Blocs d'acier qui montent et descendent sans cesse.", tDefault: "Par défaut", btnPlay: "Jouer", tCave: "Grotte", tCaveDesc: "Plafond rocheux, stalactites et stalagmites."
     },
     en: {
-        menuTitle: "Settings", optBonus: "Enable bonuses:", optPower: "Max shot power:", optWind: "Enable wind:", optWindPower: "Max wind power:", optBouncing: "Bouncing sides:", optLang: "Language:", btnValidate: "Confirm", btnNextRound: "Next Round", btnNewMatch: "New Game", windDisabled: "Wind: Disabled", windCalm: "Wind: Calm", windLabel: "Wind: ", bonusLabel: "Bonus: ", bonusNone: "None", bonusTriggered: "Triggered!", bonusOpt1: "🟢 Multiple Shot (x3)", bonusOpt2: "🔴 Mega Shot (+50%)", bonusOpt3: "🔵 Shield (Destroyer)", p1Name: "Player 1 (Red): ", p2Name: "Player 2 (Blue): ", matchOver: "Match Over!", matchOverMsg: "Player {winner} wins the match with 5 points!", hitTitle: "Hit!", hitMsg: "Player {loser} was hit!<br><br><strong>+1 point</strong> for Player {winner}.", orientationNotice: "🔄 Please rotate your device to Landscape mode to play!"
+        menuTitle: "Settings", optBonus: "Enable bonuses:", optPower: "Max shot power:", optWind: "Enable wind:", optWindPower: "Max wind power:", optBouncing: "Bouncing sides:", optLang: "Language:", btnValidate: "Confirm", btnNextRound: "Next Round", btnNewMatch: "New Game", windDisabled: "Wind: Disabled", windCalm: "Wind: Calm", windLabel: "Wind: ", bonusLabel: "Bonus: ", bonusNone: "None", bonusTriggered: "Triggered!", bonusOpt1: "🟢 Multiple Shot (x3)", bonusOpt2: "🔴 Mega Shot (+50%)", bonusOpt3: "🔵 Shield (Destroyer)", p1Name: "Player 1 (Red): ", p2Name: "Player 2 (Blue): ", matchOver: "Match Over!", matchOverMsg: "Player {winner} wins the match with 5 points!", hitTitle: "Hit!", hitMsg: "Player {loser} was hit!<br><br><strong>+1 point</strong> for Player {winner}.", orientationNotice: "🔄 Please rotate your device to Landscape mode to play!", terrainTitle: "Choose your terrain", tLandscape: "Landscape", tIndustrial: "Industrial", tLandscapeDesc: "Rolling green hills, the classic field.", tIndustrialDesc: "Steel blocks that rise and fall non-stop.", tDefault: "Default", btnPlay: "Play", tCave: "Cave", tCaveDesc: "Rocky ceiling, stalactites & stalagmites."
     }
 };
 
@@ -267,6 +311,18 @@ let particles = []; // Gère les flammes et débris d'explosions
 let explosionRadius = 35; 
 let gameState = 'playing'; 
 let nextModalAction = null;
+
+// ---- terrains ----
+let terrainType = 'landscape';   // 'landscape' (défaut) ou 'industrial'
+let pendingTerrain = 'landscape';
+let blocks = [];                 // colonnes métalliques du terrain industriel
+let envTime = 0;                 // horloge d'animation des blocs
+const IND_BLOCKS = 14;           // nombre de colonnes
+const IND_TOP_MIN = 310;         // les blocs ne montent pas plus haut (top mini)
+const IND_TOP_MAX = 470;         // ni ne descendent plus bas (top maxi)
+
+// ---- grotte ----
+let cave = null;                 // profils sol/plafond + concrétions
 
 function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
 function playShootSound() { initAudio(); if (!audioCtx) return; let osc = audioCtx.createOscillator(); let gain = audioCtx.createGain(); osc.type = 'triangle'; osc.frequency.setValueAtTime(350, audioCtx.currentTime); osc.frequency.exponentialRampToValueAtTime(60, audioCtx.currentTime + 0.15); gain.gain.setValueAtTime(0.3, audioCtx.currentTime); gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.15); osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + 0.15); }
@@ -341,8 +397,16 @@ function init() {
     });
     document.getElementById('settingsBtn').addEventListener('click', openSettings);
     document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
+    document.getElementById('cardLandscape').addEventListener('click', () => chooseTerrain('landscape'));
+    document.getElementById('cardIndustrial').addEventListener('click', () => chooseTerrain('industrial'));
+    document.getElementById('cardCave').addEventListener('click', () => chooseTerrain('cave'));
+    document.getElementById('playBtn').addEventListener('click', confirmTerrain);
 
-    resetMatch();
+    // décor d'arrière-plan derrière le menu de choix du terrain
+    generateLandscapeTerrain();
+    players[1].x = 150; players[2].x = 850;
+    players[1].y = getGroundHeight(players[1].x); players[2].y = getGroundHeight(players[2].x);
+    showTerrainSelect();
     requestAnimationFrame(gameLoop);
     setInterval(updateTimer, 1000);
 }
@@ -392,7 +456,7 @@ function saveSettings() {
     gameState = 'playing';
 }
 
-function generateTerrain() {
+function generateLandscapeTerrain() {
     terrainCtx.clearRect(0, 0, width, height); terrainCtx.fillStyle = '#4d7c0f'; terrainCtx.beginPath(); terrainCtx.moveTo(0, height);
     let baseHeight = 450;
     for (let x = 0; x <= width; x++) { let y = baseHeight + Math.sin(x * 0.01) * 50 + Math.cos(x * 0.03) * 20; terrainCtx.lineTo(x, y); }
@@ -404,9 +468,127 @@ function generateTerrain() {
     }
 }
 
+function generateTerrain() {
+    drawBackground();
+    if (terrainType === 'industrial') { initIndustrialBlocks(); drawIndustrialTerrain(); }
+    else if (terrainType === 'cave') { initCave(); drawCave(); }
+    else { generateLandscapeTerrain(); }
+}
+
+function initIndustrialBlocks() {
+    blocks = [];
+    const bw = width / IND_BLOCKS;
+    for (let i = 0; i < IND_BLOCKS; i++) {
+        let amp = 22 + Math.random() * 34;                 // amplitude du va-et-vient
+        let lo = IND_TOP_MIN + amp, hi = IND_TOP_MAX - amp;
+        let center = lo + Math.random() * Math.max(1, hi - lo);
+        blocks.push({
+            x: i * bw, w: bw + 1, center: center, amp: amp, top: center,
+            w1: 0.5 + Math.random() * 0.6, w2: 1.0 + Math.random() * 0.9,
+            p1: Math.random() * Math.PI * 2, p2: Math.random() * Math.PI * 2
+        });
+    }
+}
+
+function animateIndustrialBlocks() {
+    for (let b of blocks) {
+        // deux sinus combinés -> mouvement « aléatoire » mais borné
+        let osc = 0.62 * Math.sin(b.w1 * envTime + b.p1) + 0.38 * Math.sin(b.w2 * envTime + b.p2);
+        let top = b.center + b.amp * osc;
+        b.top = Math.max(IND_TOP_MIN, Math.min(IND_TOP_MAX, top));
+    }
+}
+
+function drawMetalBlock(x, top, w, h) {
+    let g = terrainCtx.createLinearGradient(x, top, x, top + h);
+    g.addColorStop(0, '#9aa3b2'); g.addColorStop(0.10, '#6b7280');
+    g.addColorStop(0.55, '#535b66'); g.addColorStop(1, '#363c45');
+    terrainCtx.fillStyle = g; terrainCtx.fillRect(x, top, w, h);
+    // plaque supérieure = surface où roule le tank
+    terrainCtx.fillStyle = '#b9c0cc'; terrainCtx.fillRect(x, top, w, 4);
+    terrainCtx.fillStyle = '#2b313b'; terrainCtx.fillRect(x, top + 4, w, 2);
+    // arêtes (lumière à gauche, ombre à droite)
+    terrainCtx.fillStyle = 'rgba(255,255,255,0.07)'; terrainCtx.fillRect(x, top, 3, h);
+    terrainCtx.fillStyle = 'rgba(0,0,0,0.28)'; terrainCtx.fillRect(x + w - 4, top, 4, h);
+    // nervure centrale (poutrelle) + rivets
+    terrainCtx.strokeStyle = 'rgba(0,0,0,0.22)'; terrainCtx.lineWidth = 2;
+    terrainCtx.beginPath(); terrainCtx.moveTo(x + w / 2, top + 8); terrainCtx.lineTo(x + w / 2, top + h); terrainCtx.stroke();
+    terrainCtx.fillStyle = '#2b313b';
+    for (let ry = top + 16; ry < top + h - 4; ry += 24) {
+        terrainCtx.beginPath(); terrainCtx.arc(x + 8, ry, 2, 0, Math.PI * 2); terrainCtx.fill();
+        terrainCtx.beginPath(); terrainCtx.arc(x + w - 8, ry, 2, 0, Math.PI * 2); terrainCtx.fill();
+    }
+}
+
+function drawIndustrialTerrain() {
+    terrainCtx.clearRect(0, 0, width, height);
+    for (let b of blocks) drawMetalBlock(b.x, b.top, b.w, height - b.top);
+}
+
+// ---------- décor de fond (ciel ou grotte) ----------
+function drawBackground() {
+    let g = bgCtx.createLinearGradient(0, 0, 0, height);
+    if (terrainType === 'cave') {
+        g.addColorStop(0, '#120d0a'); g.addColorStop(1, '#2a1d14');
+        bgCtx.fillStyle = g; bgCtx.fillRect(0, 0, width, height);
+        let r = bgCtx.createRadialGradient(width / 2, height / 2, 30, width / 2, height / 2, width * 0.6);
+        r.addColorStop(0, 'rgba(120,86,52,0.22)'); r.addColorStop(1, 'rgba(0,0,0,0)');
+        bgCtx.fillStyle = r; bgCtx.fillRect(0, 0, width, height);
+    } else {
+        g.addColorStop(0, '#1a0c2e'); g.addColorStop(1, '#4a2c6d');
+        bgCtx.fillStyle = g; bgCtx.fillRect(0, 0, width, height);
+    }
+}
+
+// ---------- grotte ----------
+function caveFloorY(x) { let c = cave.floor; return c.base + Math.sin(x * c.f1 + c.p1) * c.a1 + Math.cos(x * c.f2 + c.p2) * c.a2; }
+function caveCeilY(x)  { let c = cave.ceil;  return c.base + Math.sin(x * c.f1 + c.p1) * c.a1 + Math.cos(x * c.f2 + c.p2) * c.a2; }
+
+function initCave() {
+    cave = {
+        floor: { base: 472, a1: 20, f1: 0.012, p1: Math.random() * 6.28, a2: 12, f2: 0.031, p2: Math.random() * 6.28 },
+        ceil:  { base: 138, a1: 24, f1: 0.011, p1: Math.random() * 6.28, a2: 13, f2: 0.027, p2: Math.random() * 6.28 },
+        stalactites: [], stalagmites: []
+    };
+    let nUp = 5 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < nUp; i++) cave.stalagmites.push({ x: 70 + Math.random() * (width - 140), h: 26 + Math.random() * 42, w: 16 + Math.random() * 16 });
+    let nDown = 5 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < nDown; i++) cave.stalactites.push({ x: 70 + Math.random() * (width - 140), h: 28 + Math.random() * 44, w: 16 + Math.random() * 16 });
+}
+
+function drawCave() {
+    const ROCK = '#52453a', ROCK_LIGHT = '#6d5b49', ROCK_DARK = '#362c24';
+    terrainCtx.clearRect(0, 0, width, height);
+    // sol
+    terrainCtx.fillStyle = ROCK;
+    terrainCtx.beginPath(); terrainCtx.moveTo(0, height);
+    for (let x = 0; x <= width; x++) terrainCtx.lineTo(x, caveFloorY(x));
+    terrainCtx.lineTo(width, height); terrainCtx.closePath(); terrainCtx.fill();
+    // plafond
+    terrainCtx.beginPath(); terrainCtx.moveTo(0, 0);
+    for (let x = 0; x <= width; x++) terrainCtx.lineTo(x, caveCeilY(x));
+    terrainCtx.lineTo(width, 0); terrainCtx.closePath(); terrainCtx.fill();
+    // lisérés de relief
+    terrainCtx.lineWidth = 2.5; terrainCtx.strokeStyle = ROCK_LIGHT;
+    terrainCtx.beginPath(); for (let x = 0; x <= width; x++) { let y = caveFloorY(x); if (x === 0) terrainCtx.moveTo(x, y); else terrainCtx.lineTo(x, y); } terrainCtx.stroke();
+    terrainCtx.strokeStyle = ROCK_DARK;
+    terrainCtx.beginPath(); for (let x = 0; x <= width; x++) { let y = caveCeilY(x); if (x === 0) terrainCtx.moveTo(x, y); else terrainCtx.lineTo(x, y); } terrainCtx.stroke();
+    // concrétions (solides + destructibles)
+    terrainCtx.fillStyle = ROCK_LIGHT;
+    for (let s of cave.stalagmites) { let b = caveFloorY(s.x); terrainCtx.beginPath(); terrainCtx.moveTo(s.x - s.w / 2, b + 2); terrainCtx.lineTo(s.x, b - s.h); terrainCtx.lineTo(s.x + s.w / 2, b + 2); terrainCtx.closePath(); terrainCtx.fill(); }
+    for (let s of cave.stalactites) { let b = caveCeilY(s.x); terrainCtx.beginPath(); terrainCtx.moveTo(s.x - s.w / 2, b - 2); terrainCtx.lineTo(s.x, b + s.h); terrainCtx.lineTo(s.x + s.w / 2, b - 2); terrainCtx.closePath(); terrainCtx.fill(); }
+}
+
 function getGroundHeight(x) {
     if (x < 0 || x >= width) return height;
     const imgData = terrainCtx.getImageData(Math.floor(x), 0, 1, height).data;
+    if (terrainType === 'cave') {
+        // grotte : surface du SOL en suivant les cratères, mais lissée par-dessus les stalagmites
+        let start = Math.max(0, Math.floor(caveFloorY(x)) - 4);
+        if (imgData[start * 4 + 3] > 0) return caveFloorY(x);   // on démarre dans une stalagmite -> sol nominal
+        for (let y = start; y < height; y++) { if (imgData[y * 4 + 3] > 0) return y; }
+        return height;
+    }
     for (let y = 0; y < height; y++) { if (imgData[y * 4 + 3] > 0) return y; }
     return height;
 }
@@ -434,12 +616,19 @@ function triggerModal(title, msg, isMatchOver) {
     gameState = 'modal'; let t = i18n[gameSettings.lang];
     document.getElementById('modalTitle').innerText = title; document.getElementById('modalMessage').innerHTML = msg;
     let btn = document.getElementById('modalBtn');
-    if (isMatchOver) { btn.innerText = t.btnNewMatch; nextModalAction = resetMatch; } 
+    if (isMatchOver) { btn.innerText = t.btnNewMatch; nextModalAction = showTerrainSelect; } 
     else { btn.innerText = t.btnNextRound; nextModalAction = () => resetRound(false); }
     document.getElementById('modal').style.display = 'flex';
 }
 
 function update() {
+    // terrain industriel : les blocs bougent et les tanks suivent leur sommet
+    if (terrainType === 'industrial' && gameState !== 'menu' && gameState !== 'modal' && gameState !== 'settings') {
+        envTime += 0.016;
+        animateIndustrialBlocks();
+        drawIndustrialTerrain();
+        for (let id in players) players[id].y = getGroundHeight(players[id].x);
+    }
     if (gameState === 'playing') { let activeP = players[turn]; activeP.angle = Math.atan2(mouse.y - (activeP.y - 13), mouse.x - activeP.x); }
     
     // Traitement de la physique des particules (flammes/explosions)
@@ -452,7 +641,7 @@ function update() {
     }
 
     if (gameState !== 'modal' && gameSettings.bonusEnabled && bonus.active) {
-        bonus.animTime += 0.035; let minY = 60; let obstacleY = getGroundHeight(bonus.x); let maxY = obstacleY - 20; if (maxY < minY) maxY = minY + 10;
+        bonus.animTime += 0.035; let minY = (terrainType === 'cave') ? caveCeilY(bonus.x) + 28 : 60; let obstacleY = getGroundHeight(bonus.x); let maxY = obstacleY - 20; if (maxY < minY) maxY = minY + 10;
         let midY = (minY + maxY) / 2; let amplitude = (maxY - minY) / 2; bonus.y = midY + Math.sin(bonus.animTime) * amplitude;
     }
     let p = players[turn];
@@ -507,7 +696,10 @@ function update() {
 }
 
 function destroyTerrain(x, y, radius) {
-    terrainCtx.save(); terrainCtx.globalCompositeOperation = 'destination-out'; terrainCtx.fillStyle = 'rgba(0,0,0,1)'; terrainCtx.beginPath(); terrainCtx.arc(x, y, radius, 0, Math.PI * 2); terrainCtx.fill(); terrainCtx.restore();
+    // les blocs métalliques ne se détruisent pas (et seraient redessinés de toute façon)
+    if (terrainType !== 'industrial') {
+        terrainCtx.save(); terrainCtx.globalCompositeOperation = 'destination-out'; terrainCtx.fillStyle = 'rgba(0,0,0,1)'; terrainCtx.beginPath(); terrainCtx.arc(x, y, radius, 0, Math.PI * 2); terrainCtx.fill(); terrainCtx.restore();
+    }
     for (let id in players) players[id].y = getGroundHeight(players[id].x);
 }
 
@@ -562,6 +754,98 @@ function resetRound(isNewMatch) {
 }
 
 function resetMatch() { players[1].score = 0; players[2].score = 0; resetRound(true); }
+
+// ---------- choix du terrain (début de partie) ----------
+function showTerrainSelect() {
+    gameState = 'menu';
+    pendingTerrain = terrainType || 'landscape';
+    document.getElementById('settingsModal').style.display = 'none';
+    document.getElementById('modal').style.display = 'none';
+    translateTerrainDOM();
+    drawTerrainPreviews();
+    updateTerrainCards();
+    document.getElementById('terrainModal').style.display = 'flex';
+}
+
+function chooseTerrain(t) { pendingTerrain = t; updateTerrainCards(); }
+
+function updateTerrainCards() {
+    document.getElementById('cardLandscape').classList.toggle('selected', pendingTerrain === 'landscape');
+    document.getElementById('cardIndustrial').classList.toggle('selected', pendingTerrain === 'industrial');
+    document.getElementById('cardCave').classList.toggle('selected', pendingTerrain === 'cave');
+}
+
+function confirmTerrain() {
+    initAudio();
+    terrainType = pendingTerrain;
+    document.getElementById('terrainModal').style.display = 'none';
+    resetMatch();
+}
+
+function translateTerrainDOM() {
+    let t = i18n[gameSettings.lang];
+    document.getElementById('terrainTitle').innerText = t.terrainTitle;
+    document.getElementById('tNameLandscape').innerText = t.tLandscape;
+    document.getElementById('tNameIndustrial').innerText = t.tIndustrial;
+    document.getElementById('tDescLandscape').innerText = t.tLandscapeDesc;
+    document.getElementById('tDescIndustrial').innerText = t.tIndustrialDesc;
+    document.getElementById('tNameCave').innerText = t.tCave;
+    document.getElementById('tDescCave').innerText = t.tCaveDesc;
+    document.getElementById('tBadge').innerText = t.tDefault;
+    document.getElementById('playBtn').innerText = t.btnPlay;
+}
+
+function miniTank(c, x, gy, color) {
+    c.fillStyle = '#2d3748'; c.fillRect(x - 9, gy - 3, 18, 4);
+    c.fillStyle = color; c.fillRect(x - 8, gy - 7, 16, 5);
+    c.beginPath(); c.arc(x, gy - 7, 4, Math.PI, 0); c.fill();
+    c.strokeStyle = color; c.lineWidth = 2;
+    c.beginPath(); c.moveTo(x, gy - 7); c.lineTo(x + 11, gy - 14); c.stroke();
+}
+
+function drawTerrainPreviews() {
+    const cL = document.querySelector('#cardLandscape .t-prev').getContext('2d');
+    const cI = document.querySelector('#cardIndustrial .t-prev').getContext('2d');
+    const W = 240, H = 120;
+    // aperçu paysage
+    let sg = cL.createLinearGradient(0, 0, 0, H); sg.addColorStop(0, '#1a0c2e'); sg.addColorStop(1, '#4a2c6d');
+    cL.fillStyle = sg; cL.fillRect(0, 0, W, H);
+    cL.fillStyle = '#4d7c0f'; cL.beginPath(); cL.moveTo(0, H);
+    let hy = (x) => 86 + Math.sin(x * 0.05) * 10 + Math.cos(x * 0.09) * 5;
+    for (let x = 0; x <= W; x++) cL.lineTo(x, hy(x));
+    cL.lineTo(W, H); cL.fill();
+    miniTank(cL, 58, hy(58), '#ff4444'); miniTank(cL, 182, hy(182), '#4444ff');
+    // aperçu industriel
+    let ig = cI.createLinearGradient(0, 0, 0, H); ig.addColorStop(0, '#1a0c2e'); ig.addColorStop(1, '#4a2c6d');
+    cI.fillStyle = ig; cI.fillRect(0, 0, W, H);
+    let n = 8, bw = W / n, tops = [];
+    for (let i = 0; i < n; i++) tops.push(58 + Math.sin(i * 1.7) * 17);
+    for (let i = 0; i < n; i++) {
+        let top = tops[i];
+        let gg = cI.createLinearGradient(0, top, 0, H); gg.addColorStop(0, '#9aa3b2'); gg.addColorStop(1, '#363c45');
+        cI.fillStyle = gg; cI.fillRect(i * bw, top, bw + 1, H - top);
+        cI.fillStyle = '#b9c0cc'; cI.fillRect(i * bw, top, bw + 1, 3);
+        cI.fillStyle = 'rgba(0,0,0,0.28)'; cI.fillRect(i * bw + bw - 2, top, 2, H - top);
+    }
+    miniTank(cI, 58, tops[1], '#ff4444'); miniTank(cI, 182, tops[6], '#4444ff');
+    // aperçu grotte
+    const cC = document.querySelector('#cardCave .t-prev').getContext('2d');
+    cC.fillStyle = '#1a120c'; cC.fillRect(0, 0, W, H);
+    let cgrad = cC.createRadialGradient(W / 2, H / 2, 8, W / 2, H / 2, W * 0.6);
+    cgrad.addColorStop(0, 'rgba(120,86,52,0.25)'); cgrad.addColorStop(1, 'rgba(0,0,0,0)');
+    cC.fillStyle = cgrad; cC.fillRect(0, 0, W, H);
+    let rock = '#52453a', rl = '#6d5b49';
+    let ccy = function(x){ return 24 + Math.sin(x * 0.05) * 7 + Math.cos(x * 0.1) * 4; };
+    let cfy = function(x){ return H - 26 + Math.sin(x * 0.045 + 1) * 7 + Math.cos(x * 0.09) * 4; };
+    cC.fillStyle = rock;
+    cC.beginPath(); cC.moveTo(0, 0); for (let x = 0; x <= W; x++) cC.lineTo(x, ccy(x)); cC.lineTo(W, 0); cC.closePath(); cC.fill();
+    cC.beginPath(); cC.moveTo(0, H); for (let x = 0; x <= W; x++) cC.lineTo(x, cfy(x)); cC.lineTo(W, H); cC.closePath(); cC.fill();
+    cC.fillStyle = rl;
+    let spike = function(x, baseY, h, w, dir){ cC.beginPath(); cC.moveTo(x - w / 2, baseY - dir * 2); cC.lineTo(x, baseY + dir * h); cC.lineTo(x + w / 2, baseY - dir * 2); cC.closePath(); cC.fill(); };
+    spike(72, ccy(72), 20, 12, 1); spike(150, ccy(150), 26, 13, 1);
+    spike(110, cfy(110), 22, 13, -1); spike(190, cfy(190), 18, 12, -1);
+    miniTank(cC, 46, cfy(46), '#ff4444'); miniTank(cC, 200, cfy(200), '#4444ff');
+}
 
 function draw() {
     ctx.clearRect(0, 0, width, height);
