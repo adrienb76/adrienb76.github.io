@@ -56,6 +56,9 @@
         #timer { color: #ffff44; font-size: clamp(16px, 3vw, 28px); }
         #windInfo { color: #38bdf8; font-size: clamp(10px, 1.5vw, 16px); margin-top: 2px; }
         #bonusInfo { color: #a855f7; font-size: clamp(9px, 1.3vw, 14px); margin-top: 2px; }
+        #fuelInfo { display: flex; align-items: center; gap: 5px; font-size: clamp(9px, 1.3vw, 13px); margin-top: 3px; color: #cbd5e1; }
+        #fuelTrack { width: clamp(70px, 11vw, 110px); height: 7px; background: rgba(255,255,255,.18); border-radius: 4px; overflow: hidden; }
+        #fuelBar { display: block; height: 100%; width: 100%; background: #4ade80; border-radius: 4px; transition: width .08s linear; }
 
         #settingsBtn {
             position: absolute;
@@ -180,6 +183,7 @@
             <div id="timer">10</div>
             <div id="windInfo">Vent : Calme</div>
             <div id="bonusInfo">Bonus : Aucun</div>
+            <div id="fuelInfo">⛽ <span id="fuelTrack"><span id="fuelBar"></span></span></div>
         </div>
         <div id="p2Info" class="player-info">Joueur 2 (Bleu) : 0</div>
     </div>
@@ -297,14 +301,16 @@ let gameSettings = {
 let turn = 1; let roundStarter = 1; let turnTimer = 10;
 let keys = {}; let mouse = { x: 0, y: 0 };
 const gravity = 0.3; let windValue = 0; let windAcceleration = 0;
+const FUEL_MAX = 150;   // autonomie par tour (+50% vs 100 auparavant)
+const MAX_CLIMB = 10;   // marche max franchissable (~moitié de la hauteur du char)
 
 let bonus = { x: 500, y: 250, active: true, type: 1, animTime: 0 };
 let audioCtx = null;
 
 // Structure du tank adaptée à l'icône (le pivot du canon monte à y - 13, longueur à 22px)
 let players = {
-    1: { x: 150, y: 0, color: '#ff4444', size: 12, fuel: 100, score: 0, angle: -Math.PI / 4 },
-    2: { x: 850, y: 0, color: '#4444ff', size: 12, fuel: 100, score: 0, angle: -3 * Math.PI / 4 }
+    1: { x: 150, y: 0, color: '#ff4444', size: 12, fuel: FUEL_MAX, score: 0, bodyAngle: 0, angle: -Math.PI / 4 },
+    2: { x: 850, y: 0, color: '#4444ff', size: 12, fuel: FUEL_MAX, score: 0, bodyAngle: 0, angle: -3 * Math.PI / 4 }
 };
 let bullets = []; 
 let particles = []; // Gère les flammes et débris d'explosions
@@ -405,7 +411,7 @@ function init() {
     // décor d'arrière-plan derrière le menu de choix du terrain
     generateLandscapeTerrain();
     players[1].x = 150; players[2].x = 850;
-    players[1].y = getGroundHeight(players[1].x); players[2].y = getGroundHeight(players[2].x);
+    settleTank(players[1], false); settleTank(players[2], false);
     showTerrainSelect();
     requestAnimationFrame(gameLoop);
     setInterval(updateTimer, 1000);
@@ -556,6 +562,33 @@ function initCave() {
     for (let i = 0; i < nDown; i++) cave.stalactites.push({ x: 70 + Math.random() * (width - 140), h: 28 + Math.random() * 44, w: 16 + Math.random() * 16 });
 }
 
+// décroche les stalactites dont une explosion chevauche (même partiellement) la masse,
+// et les transforme en projectiles rocheux qui chutent (réutilise le tableau bullets)
+function knockStalactites(ex, ey, radius) {
+    if (terrainType !== 'cave' || !cave) return;
+    for (let k = cave.stalactites.length - 1; k >= 0; k--) {
+        let s = cave.stalactites[k];
+        let top = caveCeilY(s.x);
+        if (Math.abs(ex - s.x) < radius + s.w / 2 && ey > top - radius && ey < top + s.h + radius) {
+            // on l'efface du décor (sinon elle resterait dessinée au plafond)
+            terrainCtx.save();
+            terrainCtx.globalCompositeOperation = 'destination-out';
+            terrainCtx.beginPath();
+            terrainCtx.moveTo(s.x - s.w / 2 - 1, top - 3);
+            terrainCtx.lineTo(s.x, top + s.h + 1);
+            terrainCtx.lineTo(s.x + s.w / 2 + 1, top - 3);
+            terrainCtx.closePath(); terrainCtx.fill();
+            terrainCtx.restore();
+            // ...et elle tombe comme un obus de pierre
+            bullets.push({
+                x: s.x, y: top + s.h * 0.4, vx: (Math.random() - 0.5) * 1.5, vy: 0.8,
+                explosionScale: 1.1, kind: 'rock', w: s.w, h: s.h, spin: 0, spinV: (Math.random() - 0.5) * 0.3
+            });
+            cave.stalactites.splice(k, 1);
+        }
+    }
+}
+
 function drawCave() {
     const ROCK = '#52453a', ROCK_LIGHT = '#6d5b49', ROCK_DARK = '#362c24';
     terrainCtx.clearRect(0, 0, width, height);
@@ -595,15 +628,42 @@ function getGroundHeight(x) {
 
 function updateTimer() { if (gameState === 'playing') { turnTimer--; document.getElementById('timer').innerText = turnTimer; if (turnTimer <= 0) switchTurn(); } }
 function generateWind() { if (!gameSettings.windEnabled) { windValue = 0; windAcceleration = 0; } else { windValue = Math.floor((Math.random() - 0.5) * 20); windAcceleration = windValue * (gameSettings.windSliderValue / 1000); } updateUI(); }
-function switchTurn() { turn = turn === 1 ? 2 : 1; turnTimer = 10; document.getElementById('timer').innerText = turnTimer; players[turn].fuel = 100; generateWind(); gameState = 'playing'; }
+function switchTurn() { turn = turn === 1 ? 2 : 1; turnTimer = 10; document.getElementById('timer').innerText = turnTimer; players[turn].fuel = FUEL_MAX; generateWind(); gameState = 'playing'; }
+
+// position du centre de tourelle (pivot du canon) en tenant compte de l'inclinaison du châssis
+function turretPos(p) {
+    let a = p.bodyAngle || 0;
+    return { x: p.x + 13 * Math.sin(a), y: p.y - 13 * Math.cos(a) };
+}
+
+// hauteur d'assise + inclinaison : le char repose sur le point le plus haut sous TOUTE sa largeur
+function tankSupport(x) {
+    const hw = 16;
+    let yL = getGroundHeight(Math.max(0, x - hw));
+    let yR = getGroundHeight(Math.min(width, x + hw));
+    let yC = getGroundHeight(x);
+    let a = Math.atan2(yR - yL, 2 * hw);
+    const MAX_TILT = 0.6;                       // ~34° d'inclinaison max
+    if (a > MAX_TILT) a = MAX_TILT; else if (a < -MAX_TILT) a = -MAX_TILT;
+    let t = Math.tan(a);
+    let y = Math.min(yL + hw * t, yC, yR - hw * t);  // pose le châssis incliné -> aucun enfoncement
+    return { y: y, angle: a };
+}
+
+function settleTank(p, smooth) {
+    let s = tankSupport(p.x);
+    p.y = s.y;
+    if (smooth && typeof p.bodyAngle === 'number') p.bodyAngle += (s.angle - p.bodyAngle) * 0.25;
+    else p.bodyAngle = s.angle;
+}
 
 function shoot() {
     if (gameState !== 'playing') return; playShootSound();
-    let p = players[turn]; let dx = mouse.x - p.x; let dy = mouse.y - (p.y - 13); let distance = Math.sqrt(dx * dx + dy * dy);
+    let p = players[turn]; let tc = turretPos(p); let dx = mouse.x - tc.x; let dy = mouse.y - tc.y; let distance = Math.sqrt(dx * dx + dy * dy);
     let maxDistance = gameSettings.maxPower / 0.08; let cappedDistance = Math.min(distance, maxDistance); let power = cappedDistance * 0.08;
-    
-    let muzzleX = p.x + Math.cos(p.angle) * 22;
-    let muzzleY = (p.y - 13) + Math.sin(p.angle) * 22;
+
+    let muzzleX = tc.x + Math.cos(p.angle) * 22;
+    let muzzleY = tc.y + Math.sin(p.angle) * 22;
     
     // Déclenchement visuel de la flamme au bout du canon
     createMuzzleFlame(muzzleX, muzzleY, p.angle);
@@ -627,9 +687,9 @@ function update() {
         envTime += 0.016;
         animateIndustrialBlocks();
         drawIndustrialTerrain();
-        for (let id in players) players[id].y = getGroundHeight(players[id].x);
+        for (let id in players) settleTank(players[id], true);
     }
-    if (gameState === 'playing') { let activeP = players[turn]; activeP.angle = Math.atan2(mouse.y - (activeP.y - 13), mouse.x - activeP.x); }
+    if (gameState === 'playing') { let activeP = players[turn]; let tc = turretPos(activeP); activeP.angle = Math.atan2(mouse.y - tc.y, mouse.x - tc.x); }
     
     // Traitement de la physique des particules (flammes/explosions)
     for (let i = particles.length - 1; i >= 0; i--) {
@@ -645,49 +705,69 @@ function update() {
         let midY = (minY + maxY) / 2; let amplitude = (maxY - minY) / 2; bonus.y = midY + Math.sin(bonus.animTime) * amplitude;
     }
     let p = players[turn];
-    if (gameState === 'playing' && p.fuel > 0) {
-        let speed = 1.5; if (keys['ArrowLeft']) { p.x -= speed; p.fuel -= 2; } if (keys['ArrowRight']) { p.x += speed; p.fuel -= 2; }
-        p.x = Math.max(10, Math.min(width - 10, p.x)); p.y = getGroundHeight(p.x);
+    if (gameState === 'playing') {
+        if (p.fuel > 0) {
+            let speed = 1.5;
+            let tryMove = (dir) => {
+                let nx = Math.max(10, Math.min(width - 10, p.x + dir * speed));
+                // usine : on ne franchit pas un bloc trop haut (> moitié de la hauteur du char)
+                if (terrainType === 'industrial' && tankSupport(nx).y < p.y - MAX_CLIMB) return;
+                if (nx !== p.x) { p.x = nx; p.fuel = Math.max(0, p.fuel - 2); updateFuelGauge(); }
+            };
+            if (keys['ArrowLeft']) tryMove(-1);
+            if (keys['ArrowRight']) tryMove(1);
+        }
+        settleTank(p, true);
     }
     if ((gameState === 'shooting' || gameState === 'waiting') && bullets.length > 0) {
         let hitRegistered = false;
         for (let i = bullets.length - 1; i >= 0; i--) {
-            let b = bullets[i]; b.vx += windAcceleration; b.vy += gravity; b.x += b.vx; b.y += b.vy;
-            if (b.x < 0) {
-                if (gameSettings.bouncingSidesEnabled) { b.vx = -b.vx; b.x = 0; playBounceSound(); } 
-                else { if (turn === 1) { b.vx = -b.vx; b.x = 0; playBounceSound(); } else b.x = width; }
-            } else if (b.x > width) {
-                if (gameSettings.bouncingSidesEnabled) { b.vx = -b.vx; b.x = width; playBounceSound(); } 
-                else { if (turn === 2) { b.vx = -b.vx; b.x = width; playBounceSound(); } else b.x = 0; }
-            }
-            if (b.y < 0 && gameSettings.bouncingSidesEnabled) { b.vy = -b.vy; b.y = 0; playBounceSound(); }
-            if (b.y > height) {
-                if (gameSettings.bouncingSidesEnabled) { b.vy = -b.vy; b.y = height; playBounceSound(); } 
-                else { bullets.splice(i, 1); continue; }
-            }
-            if (gameSettings.bonusEnabled && bonus.active) {
-                let distToBonus = Math.sqrt((b.x - bonus.x) ** 2 + (b.y - bonus.y) ** 2);
-                if (distToBonus < 18) {
+            let b = bullets[i];
+            if (b.kind !== 'rock') b.vx += windAcceleration;   // une roche qui tombe ignore le vent
+            b.vy += gravity;
+            if (b.kind === 'rock') b.spin += b.spinV;
+            // sous-pas : on avance par petits incréments pour ne jamais "traverser" un char ou le sol à grande vitesse
+            let sub = Math.max(1, Math.ceil(Math.hypot(b.vx, b.vy) / 4));
+            let sx = b.vx / sub, sy = b.vy / sub;
+            for (let s = 0; s < sub; s++) {
+                b.x += sx; b.y += sy;
+                // rebonds / sorties latérales
+                if (b.x < 0) {
+                    if (gameSettings.bouncingSidesEnabled) { b.vx = -b.vx; sx = -sx; b.x = 0; playBounceSound(); }
+                    else { if (turn === 1) { b.vx = -b.vx; sx = -sx; b.x = 0; playBounceSound(); } else b.x = width; }
+                } else if (b.x > width) {
+                    if (gameSettings.bouncingSidesEnabled) { b.vx = -b.vx; sx = -sx; b.x = width; playBounceSound(); }
+                    else { if (turn === 2) { b.vx = -b.vx; sx = -sx; b.x = width; playBounceSound(); } else b.x = 0; }
+                }
+                if (b.y < 0 && gameSettings.bouncingSidesEnabled) { b.vy = -b.vy; sy = -sy; b.y = 0; playBounceSound(); }
+                if (b.y > height) {
+                    if (gameSettings.bouncingSidesEnabled) { b.vy = -b.vy; sy = -sy; b.y = height; playBounceSound(); }
+                    else { bullets.splice(i, 1); break; }
+                }
+                // bonus
+                if (gameSettings.bonusEnabled && bonus.active && Math.hypot(b.x - bonus.x, b.y - bonus.y) < 18) {
                     bonus.active = false; playBonusSound(); updateUI();
                     if (bonus.type === 1) {
-                        let speed = Math.sqrt(b.vx * b.vx + b.vy * b.vy); let angle = Math.atan2(b.vy, b.vx);
-                        bullets.push({ x: b.x, y: b.y, vx: Math.cos(angle - 0.15) * speed * 1.18, vy: Math.sin(angle - 0.15) * speed * 1.18, explosionScale: 0.7 });
-                        bullets.push({ x: b.x, y: b.y, vx: Math.cos(angle + 0.15) * speed * 0.82, vy: Math.sin(angle + 0.15) * speed * 0.82, explosionScale: 0.7 });
+                        let bspd = Math.hypot(b.vx, b.vy); let ang = Math.atan2(b.vy, b.vx);
+                        bullets.push({ x: b.x, y: b.y, vx: Math.cos(ang - 0.15) * bspd * 1.18, vy: Math.sin(ang - 0.15) * bspd * 1.18, explosionScale: 0.7 });
+                        bullets.push({ x: b.x, y: b.y, vx: Math.cos(ang + 0.15) * bspd * 0.82, vy: Math.sin(ang + 0.15) * bspd * 0.82, explosionScale: 0.7 });
                         b.explosionScale = 0.7;
-                    } else if (bonus.type === 2) { b.explosionScale = 1.5; } else if (bonus.type === 3) { bullets.splice(i, 1); continue; }
+                    } else if (bonus.type === 2) { b.explosionScale = 1.5; }
+                    else if (bonus.type === 3) { bullets.splice(i, 1); break; }
                 }
-            }
-            if (b.y >= 0 && b.y < height && b.x >= 0 && b.x < width) {
-                let pixel = terrainCtx.getImageData(Math.floor(b.x), Math.floor(b.y), 1, 1).data;
-                if (pixel[3] > 0) {
-                    playExplosionSound(); 
-                    
-                    // Déclenchement de l'effet visuel d'explosion
+                // impact DIRECT sur un char (corrige les tirs tendus qui traversaient)
+                let onTank = false;
+                for (let id in players) { let pl = players[id]; if (Math.hypot(b.x - pl.x, b.y - (pl.y - 6)) < pl.size + (b.kind === 'rock' ? b.w * 0.5 : 4)) { onTank = true; break; } }
+                // impact terrain
+                let onGround = (b.x >= 0 && b.x < width && b.y >= 0 && b.y < height) &&
+                               terrainCtx.getImageData(Math.floor(b.x), Math.floor(b.y), 1, 1).data[3] > 0;
+                if (onTank || onGround) {
+                    playExplosionSound();
                     createVisualExplosion(b.x, b.y, b.explosionScale);
-
                     destroyTerrain(b.x, b.y, explosionRadius * b.explosionScale);
+                    if (terrainType === 'cave') knockStalactites(b.x, b.y, explosionRadius * b.explosionScale);  // chute + réaction en chaîne
                     let hit = checkPlayerHit(b.x, b.y, b.explosionScale); if (hit) hitRegistered = true;
-                    bullets.splice(i, 1); continue;
+                    bullets.splice(i, 1); break;
                 }
             }
         }
@@ -700,7 +780,7 @@ function destroyTerrain(x, y, radius) {
     if (terrainType !== 'industrial') {
         terrainCtx.save(); terrainCtx.globalCompositeOperation = 'destination-out'; terrainCtx.fillStyle = 'rgba(0,0,0,1)'; terrainCtx.beginPath(); terrainCtx.arc(x, y, radius, 0, Math.PI * 2); terrainCtx.fill(); terrainCtx.restore();
     }
-    for (let id in players) players[id].y = getGroundHeight(players[id].x);
+    for (let id in players) settleTank(players[id], false);
 }
 
 function checkPlayerHit(ex, ey, currentScale) {
@@ -720,6 +800,15 @@ function checkPlayerHit(ex, ey, currentScale) {
     return false;
 }
 
+function updateFuelGauge() {
+    let bar = document.getElementById('fuelBar');
+    if (!bar) return;
+    let p = players[turn];
+    let pct = Math.max(0, Math.min(1, p.fuel / FUEL_MAX));
+    bar.style.width = (pct * 100) + '%';
+    bar.style.background = pct <= 0.25 ? '#f87171' : p.color;
+}
+
 function updateUI() {
     let t = i18n[gameSettings.lang];
     document.getElementById('orientationOverlay').innerText = t.orientationNotice;
@@ -732,6 +821,7 @@ function updateUI() {
     else if (!bonus.active) bText += t.bonusTriggered;
     else { if (bonus.type === 1) bText += t.bonusOpt1; if (bonus.type === 2) bText += t.bonusOpt2; if (bonus.type === 3) bText += t.bonusOpt3; }
     document.getElementById('bonusInfo').innerText = bText;
+    updateFuelGauge();
 }
 
 function drawShieldBonus(ctx, x, y, type) {
@@ -746,8 +836,8 @@ function resetRound(isNewMatch) {
     generateTerrain();
     players[1].x = Math.max(30, Math.min(350, 150 + Math.floor((Math.random() - 0.5) * 400)));
     players[2].x = Math.max(650, Math.min(width - 30, 850 + Math.floor((Math.random() - 0.5) * 400)));
-    players[1].y = getGroundHeight(players[1].x); players[2].y = getGroundHeight(players[2].x);
-    players[1].angle = -Math.PI / 4; players[2].angle = -3 * Math.PI / 4; players[1].fuel = 100; players[2].fuel = 100;
+    settleTank(players[1], false); settleTank(players[2], false);
+    players[1].angle = -Math.PI / 4; players[2].angle = -3 * Math.PI / 4; players[1].fuel = FUEL_MAX; players[2].fuel = FUEL_MAX;
     bonus.active = gameSettings.bonusEnabled; bonus.type = Math.floor(Math.random() * 3) + 1; bonus.x = 500; bonus.y = 60; bonus.animTime = 0;
     if (isNewMatch) roundStarter = 1; else roundStarter = (roundStarter === 1) ? 2 : 1;
     bullets = []; particles = []; turn = roundStarter; turnTimer = 10; document.getElementById('timer').innerText = turnTimer; generateWind(); gameState = 'playing';
@@ -855,10 +945,14 @@ function draw() {
     for (let id in players) {
         let p = players[id]; 
         
-        // 1. Canon étiré (longueur 22px, pivot à y - 13)
+        let a = p.bodyAngle || 0;
         ctx.save();
-        ctx.translate(p.x, p.y - 13);
-        ctx.rotate(p.angle);
+        ctx.translate(p.x, p.y);
+        ctx.rotate(a);                       // le châssis suit la pente du sol
+        // 1. Canon étiré (sa visée reste dans le repère monde malgré l'inclinaison)
+        ctx.save();
+        ctx.translate(0, -13);
+        ctx.rotate(p.angle - a);
         ctx.fillStyle = p.color;
         ctx.fillRect(0, -3, 22, 6);
         ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(0, -3, 22, 6);
@@ -867,41 +961,53 @@ function draw() {
         // 2. Chenilles sombres ovales à la base
         ctx.fillStyle = '#2d3748'; ctx.strokeStyle = '#6b7280'; ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.roundRect(p.x - 16, p.y - 5, 32, 6, 3);
+        ctx.roundRect(-16, -5, 32, 6, 3);
         ctx.fill(); ctx.stroke();
 
         // 3. Châssis profilé trapézoïdal
         ctx.fillStyle = p.color; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.moveTo(p.x - 14, p.y - 5); ctx.lineTo(p.x + 14, p.y - 5);
-        ctx.lineTo(p.x + 9, p.y - 13); ctx.lineTo(p.x - 9, p.y - 13);
+        ctx.moveTo(-14, -5); ctx.lineTo(14, -5);
+        ctx.lineTo(9, -13); ctx.lineTo(-9, -13);
         ctx.closePath();
         ctx.fill(); ctx.stroke();
 
         // 4. Dôme de la tourelle supérieur
         ctx.beginPath();
-        ctx.arc(p.x, p.y - 13, 7, Math.PI, 0);
+        ctx.arc(0, -13, 7, Math.PI, 0);
         ctx.fill(); ctx.stroke();
+        ctx.restore();
         
         if (parseInt(id) === turn && gameState === 'playing') {
             ctx.strokeStyle = '#ffff00'; ctx.lineWidth = 2;
-            ctx.beginPath(); ctx.arc(p.x, p.y - 7, p.size + 8, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath(); ctx.arc(p.x + 7 * Math.sin(a), p.y - 7 * Math.cos(a), p.size + 8, 0, Math.PI * 2); ctx.stroke();
         }
     }
 
     // Ligne de visée mise à l'échelle du nouveau canon
     if (gameState === 'playing') {
-        let activePlayer = players[turn]; let dx = mouse.x - activePlayer.x; let dy = mouse.y - (activePlayer.y - 13); let distance = Math.sqrt(dx * dx + dy * dy);
+        let activePlayer = players[turn]; let tc = turretPos(activePlayer); let dx = mouse.x - tc.x; let dy = mouse.y - tc.y; let distance = Math.sqrt(dx * dx + dy * dy);
         let maxDistance = gameSettings.maxPower / 0.08; let cappedDistance = Math.min(distance, maxDistance);
-        let startX = activePlayer.x + Math.cos(activePlayer.angle) * 22; let startY = (activePlayer.y - 13) + Math.sin(activePlayer.angle) * 22;
-        let endX = activePlayer.x + Math.cos(activePlayer.angle) * cappedDistance; let endY = (activePlayer.y - 13) + Math.sin(activePlayer.angle) * cappedDistance;
+        let startX = tc.x + Math.cos(activePlayer.angle) * 22; let startY = tc.y + Math.sin(activePlayer.angle) * 22;
+        let endX = tc.x + Math.cos(activePlayer.angle) * cappedDistance; let endY = tc.y + Math.sin(activePlayer.angle) * cappedDistance;
         ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(startX, startY); ctx.lineTo(endX, endY); ctx.stroke(); ctx.setLineDash([]);
     }
 
     // Rendu des obus
     if ((gameState === 'shooting' || gameState === 'waiting') && bullets.length > 0) {
-        ctx.fillStyle = '#ffffff';
-        for (let b of bullets) { ctx.beginPath(); let bRadius = b.explosionScale > 1 ? 6 : (b.explosionScale < 1 ? 3 : 4); ctx.arc(b.x, b.y, bRadius, 0, Math.PI * 2); ctx.fill(); }
+        for (let b of bullets) {
+            if (b.kind === 'rock') {
+                ctx.save();
+                ctx.translate(b.x, b.y); ctx.rotate(b.spin || 0);
+                ctx.fillStyle = '#6d5b49'; ctx.strokeStyle = '#3a2f27'; ctx.lineWidth = 1.5;
+                ctx.beginPath(); ctx.moveTo(-b.w / 2, -b.h * 0.35); ctx.lineTo(0, b.h * 0.5); ctx.lineTo(b.w / 2, -b.h * 0.35); ctx.closePath();
+                ctx.fill(); ctx.stroke();
+                ctx.restore();
+            } else {
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath(); let bRadius = b.explosionScale > 1 ? 6 : (b.explosionScale < 1 ? 3 : 4); ctx.arc(b.x, b.y, bRadius, 0, Math.PI * 2); ctx.fill();
+            }
+        }
     }
 
     // Rendu dynamique des particules (flammes et explosions)
