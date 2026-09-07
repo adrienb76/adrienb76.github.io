@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Bordée — duel de bateaux</title>
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="assets/favicon-256.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<style>
+  html, body {
+    margin: 0; height: 100%;
+    background: #0d2233;
+    font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    color: #cfe9f5;
+    overflow: hidden;
+  }
+  #wrap {
+    height: 100%;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas {
+    background: #a9e1f4;
+    box-shadow: 0 0 0 3px #0d2233, 0 14px 40px rgba(0,0,0,.55);
+    border-radius: 4px;
+    max-width: 100%; max-height: 100%;
+  }
+  #hint {
+    position: fixed; left: 0; right: 0; bottom: 6px;
+    text-align: center; font-size: 13px; opacity: .55;
+  }
+</style>
+</head>
+<body>
+  <div id="wrap"><canvas id="cv" width="1280" height="704"></canvas></div>
+  <div id="hint"></div>
+  <script src="game.js"></script>
+</body>
+</html>
