@@ -32,6 +32,7 @@ const TEXTES = {
     bonus_portee: 'Longue portée', bonus_portee_aide: 'portée doublée',
     bonus_rafale: 'Tir en rafale', bonus_rafale_aide: 'les 5 bordées à la suite',
     bonus_vent: 'Vent arrière',    bonus_vent_aide: '+60 % de vitesse, 10 s',
+    bonus_mini: 'Sloop de poche',  bonus_mini_aide: 'minuscule et rapide',
     bonus_brulot: 'Brûlot',        bonus_brulot_aide: 'à éviter : 3 points de coque',
 
     briefTitre: 'Aucun bonus en aventure : la citadelle ne fait pas de cadeaux.',
@@ -63,7 +64,7 @@ const TEXTES = {
     rejouer: 'R pour rejouer · Échap pour le menu',
     erreurServeur: 'Lance le jeu via un serveur local (voir README.md).',
     docTitre: 'Bordée — duel de bateaux',
-    docAide: 'J1 : Z Q S D + Espace · J2 : flèches + Entrée · R : rejouer · L : langue'
+    docAide: 'J1 : Z Q S D + Espace · J2 : flèches + Entrée · R : rejouer · L : langue · V : son'
   },
   en: {
     titre: 'BROADSIDE',
@@ -83,6 +84,7 @@ const TEXTES = {
     bonus_portee: 'Long range',      bonus_portee_aide: 'double the range',
     bonus_rafale: 'Rapid fire',      bonus_rafale_aide: 'all 5 broadsides at once',
     bonus_vent: 'Following wind',    bonus_vent_aide: '+60 % speed, 10 s',
+    bonus_mini: 'Pocket sloop',      bonus_mini_aide: 'tiny and twice as fast',
     bonus_brulot: 'Fire ship',       bonus_brulot_aide: 'avoid it: 3 hull points',
 
     briefTitre: 'No pickups in the campaign: the citadel grants no favours.',
@@ -114,7 +116,7 @@ const TEXTES = {
     rejouer: 'R to replay · Esc for the menu',
     erreurServeur: 'Serve the game over HTTP (see README.md).',
     docTitre: 'Broadside — ship duel',
-    docAide: 'P1: W A S D + Space · P2: arrows + Enter · R: replay · L: language'
+    docAide: 'P1: W A S D + Space · P2: arrows + Enter · R: replay · L: language · V: sound'
   }
 };
 
@@ -147,7 +149,204 @@ function t(cle, ...args) {
   return s;
 }
 
+/* ---------- son ---------------------------------------------------
+   Tout est SYNTHETISE a la volee : aucun fichier a charger, aucune licence a
+   gerer, et surtout aucune lassitude de repetition, puisque chaque detonation
+   est fabriquee sur mesure au lieu d'etre rejouee a l'identique.
+   Un `AudioContext` demarre suspendu tant que l'utilisateur n'a pas agi : on
+   le reveille au premier appui de touche ou au premier clic.              */
+
+let audio = null, maitre = null, tamponBruit = null;
+let voix = 0;
+const dernierSon = {};
+const VOIX_MAX = 14;          // au-dela ca sature et ca crache
+const REPOS_SON = 0.035;      // meme son deux fois de suite : on espace
+
+function sonMemorise() {
+  try {
+    const v = localStorage.getItem('bordee.son');
+    if (v !== null) return v === '1';
+  } catch (e) { /* stockage indisponible */ }
+  return true;
+}
+let sonActif = sonMemorise();
+
+function reveillerAudio() {
+  if (audio) { if (audio.state === 'suspended') audio.resume(); return; }
+  const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!AC) return;            // navigateur sans Web Audio, ou banc de test
+  audio = new AC();
+  maitre = audio.createGain();
+  maitre.gain.value = sonActif ? 0.9 : 0;
+  maitre.connect(audio.destination);
+  houle();
+}
+
+function basculerSon() {
+  sonActif = !sonActif;
+  if (maitre) maitre.gain.value = sonActif ? 0.9 : 0;
+  try { localStorage.setItem('bordee.son', sonActif ? '1' : '0'); } catch (e) { /* sans memoire */ }
+}
+
+function bruitBlanc() {
+  if (tamponBruit) return tamponBruit;
+  const n = audio.sampleRate * 2;
+  tamponBruit = audio.createBuffer(1, n, audio.sampleRate);
+  const d = tamponBruit.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  return tamponBruit;
+}
+
+// position a l'ecran vers panoramique : on entend de quel bord vient le coup
+const panDe = (x) => (x === undefined ? 0 : clamp((x / W) * 2 - 1, -0.85, 0.85));
+
+function sortie(g, pan) {
+  if (audio.createStereoPanner) {
+    const p = audio.createStereoPanner();
+    p.pan.value = pan;
+    g.connect(p); p.connect(maitre);
+  } else g.connect(maitre);
+}
+
+function enveloppe(t0, duree, gain, attaque) {
+  const g = audio.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t0 + (attaque || 0.004));
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + duree);
+  return g;
+}
+
+function suivre(n, t0, duree) {
+  voix++;
+  n.onended = () => { voix--; };
+  n.start(t0);
+  n.stop(t0 + duree + 0.03);
+}
+
+// bouffee de bruit filtre : detonations, impacts, ploufs
+function souffle(o) {
+  const t0 = audio.currentTime + (o.retard || 0);
+  const src = audio.createBufferSource();
+  src.buffer = bruitBlanc();
+  src.loop = true;
+  const f = audio.createBiquadFilter();
+  f.type = o.filtre || 'bandpass';
+  f.frequency.setValueAtTime(o.freq, t0);
+  if (o.freq2) f.frequency.exponentialRampToValueAtTime(o.freq2, t0 + o.duree);
+  f.Q.value = o.q === undefined ? 1 : o.q;
+  const g = enveloppe(t0, o.duree, o.gain, o.attaque);
+  src.connect(f); f.connect(g); sortie(g, o.pan || 0);
+  suivre(src, t0, o.duree);
+}
+
+// note tenue ou glissee : coups sourds, carillons, sifflement de missile
+function ton(o) {
+  const t0 = audio.currentTime + (o.retard || 0);
+  const osc = audio.createOscillator();
+  osc.type = o.type || 'sine';
+  osc.frequency.setValueAtTime(o.freq, t0);
+  if (o.freq2) osc.frequency.exponentialRampToValueAtTime(o.freq2, t0 + o.duree);
+  const g = enveloppe(t0, o.duree, o.gain, o.attaque);
+  osc.connect(g); sortie(g, o.pan || 0);
+  suivre(osc, t0, o.duree);
+}
+
+/* Fond de houle : bruit tres filtre dont la coupure respire lentement. Il ne
+   s'arrete jamais, donc il n'entre pas dans le compte des voix.           */
+function houle() {
+  const src = audio.createBufferSource();
+  src.buffer = bruitBlanc();
+  src.loop = true;
+  const f = audio.createBiquadFilter();
+  f.type = 'lowpass'; f.frequency.value = 380; f.Q.value = 0.7;
+  const g = audio.createGain(); g.gain.value = 0.05;
+  const lfo = audio.createOscillator(); lfo.frequency.value = 0.08;
+  const prof = audio.createGain(); prof.gain.value = 150;
+  lfo.connect(prof); prof.connect(f.frequency);
+  src.connect(f); f.connect(g); g.connect(maitre);
+  src.start(); lfo.start();
+}
+
+/* Un son par BORDEE et non par boulet : c'est ce qui evite le crepitement de
+   mitraillette sur le tir en rafale. Le volume monte un peu quand la gerbe
+   part a six. Chaque coup tire ses hauteurs au hasard, donc deux detonations
+   ne sonnent jamais tout a fait pareil.                                    */
+const SONS = {
+  bordee(x, f) {
+    const v = rnd(0.86, 1.16), p = panDe(x);
+    souffle({ freq: 430 * v, freq2: 150, q: 0.7, gain: 0.42 * f, duree: 0.3 * v, pan: p });
+    ton({ freq: 115 * v, freq2: 42, gain: 0.5 * f, duree: 0.24, pan: p });
+  },
+  canonFort(x) {                       // plus grave : on distingue qui tire
+    const v = rnd(0.88, 1.12), p = panDe(x);
+    souffle({ freq: 240 * v, freq2: 90, q: 0.6, gain: 0.34, duree: 0.42 * v, pan: p });
+    ton({ freq: 64 * v, freq2: 30, gain: 0.42, duree: 0.36, pan: p });
+  },
+  impact(x, f) {
+    const v = rnd(0.85, 1.2), p = panDe(x);
+    souffle({ freq: 1500 * v, q: 1.4, gain: 0.3 * f, duree: 0.1, pan: p });
+    ton({ freq: 220 * v, freq2: 110, gain: 0.24 * f, duree: 0.09, type: 'triangle', pan: p });
+  },
+  ricochet(x) {                        // le boulet se perd dans un rocher
+    souffle({ freq: rnd(700, 1100), q: 2.2, gain: 0.16, duree: 0.14, pan: panDe(x) });
+  },
+  plouf(x) {                           // boulet a l'eau : coup mat puis gerbe
+    const v = rnd(0.85, 1.2), p = panDe(x);
+    souffle({ freq: 900 * v, freq2: 260, q: 0.9, gain: 0.2, duree: 0.16, pan: p });
+    souffle({ freq: 3200, freq2: 1400, q: 0.7, gain: 0.1, duree: 0.28, retard: 0.05, pan: p });
+    ton({ freq: 300 * v, freq2: 120, gain: 0.12, duree: 0.12, pan: p });
+  },
+  explosion(x, f) {
+    const v = rnd(0.85, 1.15), p = panDe(x);
+    souffle({ freq: 700 * v, freq2: 80, q: 0.5, gain: 0.5 * f, duree: 0.75 * v, pan: p });
+    ton({ freq: 90 * v, freq2: 26, gain: 0.5 * f, duree: 0.6, pan: p });
+  },
+  naufrage(x) {
+    const p = panDe(x);
+    souffle({ freq: 500, freq2: 60, q: 0.5, gain: 0.5, duree: 1, pan: p });
+    ton({ freq: 150, freq2: 34, gain: 0.4, duree: 0.9, type: 'triangle', pan: p });
+    souffle({ freq: 2400, freq2: 700, q: 0.8, gain: 0.2, duree: 0.7, retard: 0.25, pan: p });
+  },
+  pop(x) {                             // une barque affleure : tres discret
+    const p = panDe(x);
+    ton({ freq: rnd(620, 760), freq2: 1150, gain: 0.09, duree: 0.09, attaque: 0.002, pan: p });
+  },
+  bonus(x) {                           // ramassage : leger, deux notes montantes
+    const p = panDe(x);
+    ton({ freq: 880, gain: 0.11, duree: 0.09, type: 'triangle', pan: p });
+    ton({ freq: 1320, gain: 0.11, duree: 0.14, type: 'triangle', retard: 0.06, pan: p });
+  },
+  malus(x) {
+    const p = panDe(x);
+    ton({ freq: 300, freq2: 70, gain: 0.3, duree: 0.4, type: 'sawtooth', pan: p });
+    souffle({ freq: 600, freq2: 90, q: 0.5, gain: 0.45, duree: 0.6, pan: p });
+  },
+  missile(x) {                         // sifflement de fusee, volontairement bete
+    const p = panDe(x);
+    ton({ freq: 180, freq2: 1800, gain: 0.22, duree: 0.7, type: 'sawtooth', pan: p });
+    souffle({ freq: 900, freq2: 3000, q: 0.7, gain: 0.16, duree: 0.7, pan: p });
+  },
+  victoire() {
+    [523, 659, 784, 1047].forEach((f, i) =>
+      ton({ freq: f, gain: 0.2, duree: 0.3, type: 'triangle', retard: i * 0.11 }));
+  },
+  defaite() {
+    [440, 370, 294, 220].forEach((f, i) =>
+      ton({ freq: f, gain: 0.2, duree: 0.42, type: 'triangle', retard: i * 0.14 }));
+  }
+};
+
+function son(nom, x, force) {
+  if (!audio || !sonActif || !SONS[nom]) return;
+  const t = audio.currentTime;
+  if (t - (dernierSon[nom] || -9) < REPOS_SON) return;   // anti-crepitement
+  if (voix > VOIX_MAX) return;
+  dernierSon[nom] = t;
+  SONS[nom](x, force === undefined ? 1 : force);
+}
+
 /* ---------- atlas ------------------------------------------------ */
+
 
 const TILE = 64;
 const TILES_COLS = 16;
@@ -714,6 +913,7 @@ const BONUS = [
   { id: 'portee', col: '#4ade80' },
   { id: 'rafale', col: '#ff4757' },
   { id: 'vent',   col: '#38bdf8', duree: 10 },
+  { id: 'mini',   col: '#f472b6', duree: 10 },
   /* Le brulot n'est pas un bonus : le ramasser coute MALUS_DEGATS points de
      coque. Il n'est pas destructible, il faut donc l'eviter. `malus` le retire
      de la legende de l'accueil - la surprise ne joue qu'une fois - mais en jeu
@@ -735,6 +935,25 @@ const aideBonus = (b) => t('bonus_' + b.id + '_aide');
    couple 1.60/1.38 le laisse a 54 px comme le reglage precedent. Augmenter la
    vitesse sans la giration transformerait le bateau en patinoire.          */
 const VENT_V = 1.60, VENT_G = 1.38;
+
+/* Sloop de poche : la coque tombe a 30 % du gabarit, ce qui reduit d'autant
+   la surface offerte aux boulets. En echange, ses propres boulets sont deux
+   fois plus rapides mais portent moins loin et n'enlevent qu'un demi-point.
+   La giration monte plus que la vitesse : un canot doit virer plus court
+   qu'un vaisseau, pas plus large.                                          */
+const MINI = {
+  taille: 0.30,
+  vitesse: 2.0,
+  giration: 2.2,
+  boulet: { vitesse: 2.0, portee: 0.6, degats: 0.5, calibre: 0.55 }
+};
+// facteur de duree de vie du boulet : portee = duree x vitesse
+MINI.boulet.vie = MINI.boulet.portee / MINI.boulet.vitesse;
+
+// gabarit courant d'un bateau : 1, ou MINI.taille sous l'effet du sloop
+function tailleDe(s) {
+  return (s.mobilite && BONUS[s.mobilite.type].id === 'mini') ? MINI.taille : 1;
+}
 const BONUS_TIRS = 5, BONUS_MAX = 4, BONUS_R = 34;
 
 let bonusActif = true;      // curseur de l'ecran de choix
@@ -766,7 +985,10 @@ function majBonus(dt) {
     if (prochainBonus <= 0) {
       if (items.length < BONUS_MAX) {
         const p = positionLibre();
-        if (p) items.push({ x: p.x, y: p.y, type: (Math.random() * BONUS.length) | 0, t: rnd(0, 6.28) });
+        if (p) {
+          items.push({ x: p.x, y: p.y, type: (Math.random() * BONUS.length) | 0, t: rnd(0, 6.28) });
+          son('pop', p.x);
+        }
       }
       prochainBonus = rnd(5.5, 9.5);
     }
@@ -782,6 +1004,7 @@ function majBonus(dt) {
         if (b.malus) {
           boom(it.x, it.y, 1.5);
           epave(it.x, it.y);
+          son('malus', it.x);
           toucher(s, it.x, it.y, MALUS_DEGATS);
         } else if (b.duree) {
           s.mobilite = { type: it.type, reste: b.duree };   // chrono des le ramassage
@@ -789,6 +1012,7 @@ function majBonus(dt) {
           s.bonus = { type: it.type, tirs: BONUS_TIRS };
         }
         effets.push({ type: 'anneau', x: it.x, y: it.y, t: 0, vie: 0.5, col: b.col });
+        if (!b.malus) son('bonus', it.x);
         items.splice(i, 1);
         break;
       }
@@ -906,6 +1130,7 @@ function majBrulots(dt) {
 
 function exploserBrulot(b, aBord) {
   boom(b.x, b.y, aBord ? 1.5 : 1.1);
+  son('explosion', b.x, aBord ? 1.2 : 0.8);
   epave(b.x, b.y);
   effets.push({ type: 'anneau', x: b.x, y: b.y, t: 0, vie: 0.5, col: '#c1121f' });
 }
@@ -979,6 +1204,7 @@ function lancerMissile() {
     v: 90, t: 0, fumee: 0, cible
   };
   fumee(tireur.x, tireur.y, 0, 1, 10);
+  son('missile', tireur.x);
 }
 
 function majMissile(dt) {
@@ -1010,6 +1236,7 @@ function majMissile(dt) {
       boom(m.cible.x + rnd(-46, 46), m.cible.y + rnd(-52, 52), rnd(1, 1.9), i * 0.06);
     }
     epave(m.cible.x, m.cible.y);
+    son('explosion', m.cible.x, 1.6);
     toucher(m.cible, m.x, m.y, PV_MAX);
     missile = null;
     return;
@@ -1051,6 +1278,22 @@ function dessinerMissile() {
   ctx.moveTo(11, -4); ctx.lineTo(20, 0); ctx.lineTo(11, 4);
   ctx.closePath(); ctx.fill();
   ctx.restore();
+}
+
+/* Repousse un bateau vers l'eau libre la plus proche. Sert quand le sloop de
+   poche reprend sa taille : a 30 % il se glisse a 8 px d'une cote, ou une
+   coque normale ne passe pas, et resterait bloque sans ce filet.          */
+function degager(s) {
+  if (!bloqueA(s.x, s.y, RAYON_COQUE)) return;
+  for (let r = 10; r <= 260; r += 10) {
+    for (let a = 0; a < 6.2832; a += 0.3) {
+      const x = s.x + Math.cos(a) * r, y = s.y + Math.sin(a) * r;
+      if (bloqueA(x, y, RAYON_COQUE)) continue;
+      s.x = x; s.y = y; s.vx = 0; s.vy = 0;
+      fumee(x, y, 0, 0, 8);
+      return;
+    }
+  }
 }
 
 /* ---------- entites ---------------------------------------------- */
@@ -1150,6 +1393,7 @@ const AVALEES = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
                          'Space', 'Enter', 'NumpadEnter', 'Tab']);
 
 addEventListener('keydown', e => {
+  reveillerAudio();          // un AudioContext ne demarre qu'apres un geste
   const k = (e.key || '').toLowerCase();
   const c = e.code || '';
   if (AVALEES.has(c)) e.preventDefault();
@@ -1157,6 +1401,7 @@ addEventListener('keydown', e => {
   if (ecran === 'menu') { toucheMenu(k, c); return; }
 
   guetterCode(k);
+  if (k === 'v') { basculerSon(); return; }
   if (k === 'r') { reset(); return; }
   if (c === 'Escape' || k === 'm') { ecran = 'menu'; enfoncees.clear(); return; }
   enfoncees.add(c);
@@ -1185,6 +1430,7 @@ function toucheMenu(k, c) {
     if (k === '1' || c === 'Digit1' || c === 'Numpad1') nbJoueurs = 1;
     if (k === '2' || c === 'Digit2' || c === 'Numpad2') nbJoueurs = 2;
   }
+  if (k === 'v') basculerSon();
   if (k === 'l') choisirLangue(LANGUES[(LANGUES.indexOf(langue) + 1) % LANGUES.length]);
   if (k === 'b' && mode === 'duel') bonusActif = !bonusActif;
   if (c === 'Enter' || c === 'NumpadEnter' || c === 'Space') { reset(); ecran = 'jeu'; }
@@ -1205,9 +1451,11 @@ cv.addEventListener('mousemove', e => {
 });
 
 cv.addEventListener('click', e => {
+  reveillerAudio();
   if (ecran !== 'menu') return;
   const z = zonesMenu().find(zz => dedans(versCanvas(e), zz));
   if (!z) return;
+  if (z.role === 'son')      basculerSon();
   if (z.role === 'langue')   choisirLangue(z.id);
   if (z.role === 'mode')     { mode = z.id; carteChoisie = 0; }
   if (z.role === 'carte')    carteChoisie = z.id;
@@ -1232,6 +1480,20 @@ function fumee(x, y, dx, dy, n) {
   }
 }
 
+/* Le boulet qui n'a rien touche finit a la mer : gerbe, anneau qui s'ecarte
+   et gouttes retombantes. Sans ca les tirs manques disparaissaient sans un
+   mot, et on ne voyait pas ou ils tombaient.                              */
+function plouf(x, y) {
+  effets.push({ type: 'plouf', x, y, t: 0, vie: 0.55 });
+  for (let i = 0; i < 6; i++) {
+    effets.push({
+      type: 'goutte', x, y, t: 0, vie: rnd(0.3, 0.5),
+      vx: rnd(-70, 70), vy: rnd(-90, -30), grav: 300, r: rnd(1.5, 3)
+    });
+  }
+  son('plouf', x);
+}
+
 function epave(x, y) {
   for (let i = 0; i < 12; i++) {
     effets.push({
@@ -1253,11 +1515,19 @@ function tirer(s, cible) {
   const longue = type === 'portee';
   const rafale = type === 'rafale';
 
-  const postes   = gerbe ? [-40, -24, -8, 8, 24, 40] : [-26, 0, 26];
+  // le sloop de poche occupe l'emplacement mobilite : il se cumule donc avec
+  // n'importe quel bonus d'armement, et leurs effets se multiplient
+  const petit = tailleDe(s) < 1;
+  const taille = petit ? MINI.taille : 1;
+  const mb = MINI.boulet;
+
+  const postes   = (gerbe ? [-40, -24, -8, 8, 24, 40] : [-26, 0, 26]).map(t => t * taille);
   const eventail = gerbe ? 0.245 : 0;    // demi-ouverture de la gerbe (~14 deg)
   const ecart    = 0.035;                // dispersion aleatoire
-  const vie      = longue ? BOULET_VIE * 1.55 : BOULET_VIE;
-  const vmin     = longue ? BOULET_V + 50 : BOULET_V - 20;
+  const vie      = (longue ? BOULET_VIE * 1.55 : BOULET_VIE) * (petit ? mb.vie : 1);
+  const vmin     = (longue ? BOULET_V + 50 : BOULET_V - 20) * (petit ? mb.vitesse : 1);
+  const degats   = petit ? mb.degats : 1;
+  const calibre  = petit ? mb.calibre : 1;
 
   const hx = Math.cos(s.cap), hy = Math.sin(s.cap);
   const ex = cible.x - s.x, ey = cible.y - s.y;
@@ -1270,20 +1540,21 @@ function tirer(s, cible) {
     // en gerbe, chaque poste tire en eventail : biais de -1 a +1 le long de la coque
     const biais = gerbe ? (i - (postes.length - 1) / 2) / ((postes.length - 1) / 2) : 0;
     const a = angleFeu + biais * eventail + rnd(-ecart, ecart);
-    const ox = s.x + hx * t + fx * 20;
-    const oy = s.y + hy * t + fy * 20;
+    const ox = s.x + hx * t + fx * 20 * taille;
+    const oy = s.y + hy * t + fy * 20 * taille;
     boulets.push({
       x: ox, y: oy,
       vx: Math.cos(a) * rnd(vmin, vmin + 40), vy: Math.sin(a) * rnd(vmin, vmin + 40),
-      vie, perce, equipe: s.equipe, teinte: b ? BONUS[b.type].col : null
+      vie, perce, degats, calibre, equipe: s.equipe, teinte: b ? BONUS[b.type].col : null
     });
     fumee(ox, oy, fx, fy);
   });
 
   // en rafale les 5 bordees s'enchainent presque sans rechargement ; on allege
   // le recul, sinon cinq coups coup sur coup deportent le bateau hors controle
+  son('bordee', s.x, gerbe ? 1.3 : 1);   // un seul son pour toute la bordee
   s.cool = rafale ? RECHARGE * RAFALE : RECHARGE;
-  const recul = rafale ? 11 : 26;
+  const recul = (rafale ? 11 : 26) * (petit ? 0.5 : 1);
   s.vx -= fx * recul;
   s.vy -= fy * recul;
 
@@ -1333,6 +1604,7 @@ function majCitadelle(dt) {
       perce: false, equipe: 'citadelle', teinte: null
     });
     fumee(ox, oy, Math.cos(k.angle), Math.sin(k.angle), 6);
+    son('canonFort', k.x);
     k.flash = 0.12;
     k.cool = CIT.canonCadence * rnd(0.85, 1.25);
   }
@@ -1345,12 +1617,16 @@ function degatCitadelle(i, bl) {
   const g = citGrid[i];
   const f = forts[g.f];
   boom(bl.x, bl.y, 0.75);
+  son('impact', bl.x, 0.8);
   if (g.k < 0) return;
 
   const k = f.canons[g.k];
-  if (k.pv <= 0 || --k.pv > 0) return;
+  if (k.pv <= 0) return;
+  k.pv -= (bl.degats || 1);
+  if (k.pv > 0) return;
 
   boom(k.x, k.y, 1.2);
+  son('explosion', k.x, 1);
   if (k.garderSol) {
     /* Piece posee sur un socle a elle (une tour sur son ilot) : on se contente
        de retirer le canon. Y ecrire une ruine remplacerait le sable par une
@@ -1377,7 +1653,8 @@ function raserFort(f) {
     const t = pioche(f.tiles);
     boom(t.c * TILE + rnd(0, TILE), t.r * TILE + rnd(0, TILE), rnd(0.8, 1.7), i * 0.08);
   }
-  if (forts.every(o => o.detruite)) { fini = true; resultat = 'victoire'; }
+  son('explosion', f.cx, 1.4);
+  if (forts.every(o => o.detruite)) { fini = true; resultat = 'victoire'; son('victoire'); }
 }
 
 /* ---------- update ------------------------------------------------ */
@@ -1394,8 +1671,18 @@ function update(dt) {
 
   for (const s of bateaux) {
     // le bonus de mobilite se consomme au temps qui passe, pas aux tirs
-    if (s.mobilite && (s.mobilite.reste -= dt) <= 0) s.mobilite = null;
-    const vent = !!s.mobilite;
+    const petitAvant = tailleDe(s) < 1;
+    if (s.mobilite && (s.mobilite.reste -= dt) <= 0) {
+      s.mobilite = null;
+      // il reprend son gabarit : s'il s'etait faufile dans une passe trop
+      // etroite pour sa taille normale, il s'y retrouverait emmure
+      if (petitAvant) degager(s);
+    }
+    const effet = s.mobilite ? BONUS[s.mobilite.type].id : null;
+    const vent = effet === 'vent';
+    const petit = effet === 'mini';
+    const taille = petit ? MINI.taille : 1;
+    const rayon = RAYON_COQUE * taille;
 
     if (!s.coule) {
       const k = TOUCHES[s.touches];
@@ -1405,9 +1692,10 @@ function update(dt) {
       if (len > 0) {
         ix /= len; iy /= len;
         // la giration monte avec la vitesse, sinon le bateau part en patinoire
-        s.cap = tournerVers(s.cap, Math.atan2(iy, ix), GIRATION * (vent ? VENT_G : 1) * dt);
+        const g = vent ? VENT_G : (petit ? MINI.giration : 1);
+        s.cap = tournerVers(s.cap, Math.atan2(iy, ix), GIRATION * g * dt);
       }
-      const vmax = VITESSE * (vent ? VENT_V : 1);
+      const vmax = VITESSE * (vent ? VENT_V : (petit ? MINI.vitesse : 1));
       const f = 1 - Math.exp(-5.5 * dt);
       s.vx += (ix * vmax - s.vx) * f;
       s.vy += (iy * vmax - s.vy) * f;
@@ -1422,16 +1710,20 @@ function update(dt) {
 
     // deplacement axe par axe : on glisse le long des obstacles
     const nx = s.x + s.vx * dt;
-    if (!bloqueA(nx, s.y, RAYON_COQUE)) s.x = nx; else s.vx *= -0.15;
+    if (!bloqueA(nx, s.y, rayon)) s.x = nx; else s.vx *= -0.15;
     const ny = s.y + s.vy * dt;
-    if (!bloqueA(s.x, ny, RAYON_COQUE)) s.y = ny; else s.vy *= -0.15;
+    if (!bloqueA(s.x, ny, rayon)) s.y = ny; else s.vy *= -0.15;
 
     // sillage
     const v = Math.hypot(s.vx, s.vy);
     const dernier = s.sillage[0];
     // sous le vent le sillage se resserre et grossit : ca se lit immediatement
     if (v > 25 && (!dernier || dist(s.x, s.y, dernier.x, dernier.y) > (vent ? 6 : 9))) {
-      s.sillage.unshift({ x: s.x - Math.cos(s.cap) * 40, y: s.y - Math.sin(s.cap) * 40, a: 1, gros: vent });
+      const recul = 40 * taille;
+      s.sillage.unshift({
+        x: s.x - Math.cos(s.cap) * recul, y: s.y - Math.sin(s.cap) * recul,
+        a: 1, gros: vent, sc: taille
+      });
       if (s.sillage.length > (vent ? 34 : 26)) s.sillage.pop();
     }
     s.sillage.forEach(p => { p.a -= dt * 0.75; });
@@ -1443,10 +1735,11 @@ function update(dt) {
     const a = bateaux[0], b = bateaux[1];
     const dx = b.x - a.x, dy = b.y - a.y;
     const d = Math.hypot(dx, dy);
-    if (d > 0.001 && d < 56) {
-      const p = (56 - d) / 2, ux = dx / d, uy = dy / d;
-      if (!bloqueA(a.x - ux * p, a.y - uy * p, RAYON_COQUE)) { a.x -= ux * p; a.y -= uy * p; }
-      if (!bloqueA(b.x + ux * p, b.y + uy * p, RAYON_COQUE)) { b.x += ux * p; b.y += uy * p; }
+    const ecart = 28 * (tailleDe(a) + tailleDe(b));
+    if (d > 0.001 && d < ecart) {
+      const p = (ecart - d) / 2, ux = dx / d, uy = dy / d;
+      if (!bloqueA(a.x - ux * p, a.y - uy * p, RAYON_COQUE * tailleDe(a))) { a.x -= ux * p; a.y -= uy * p; }
+      if (!bloqueA(b.x + ux * p, b.y + uy * p, RAYON_COQUE * tailleDe(b))) { b.x += ux * p; b.y += uy * p; }
     }
   }
 
@@ -1461,7 +1754,8 @@ function update(dt) {
     bl.x += bl.vx * dt;
     bl.y += bl.vy * dt;
     bl.vie -= dt;
-    let mort = bl.vie <= 0;
+    let mort = false;
+    if (bl.vie <= 0) { mort = true; if (!horsCarte(bl.x, bl.y)) plouf(bl.x, bl.y); }
 
     if (!mort) {
       const o = obstacleBoulet(bl.x, bl.y);
@@ -1469,7 +1763,7 @@ function update(dt) {
         mort = true;
       } else if (o === 'obstacle') {
         // les perforants ignorent iles et rochers
-        if (!bl.perce) { boom(bl.x, bl.y, 0.6); mort = true; }
+        if (!bl.perce) { boom(bl.x, bl.y, 0.6); son('ricochet', bl.x); mort = true; }
       } else if (o !== null) {
         // Tile de citadelle. Les pieces sont sur les remparts : leurs propres
         // boulets passent au-dessus du fort, sinon les canons des murs nord et
@@ -1487,8 +1781,9 @@ function update(dt) {
         const c = Math.cos(-s.cap), sn = Math.sin(-s.cap);
         const long = rx * c - ry * sn;
         const travers = rx * sn + ry * c;
-        if (Math.abs(long) < 46 && Math.abs(travers) < 20) {
-          toucher(s, bl.x, bl.y);
+        const g = tailleDe(s);
+        if (Math.abs(long) < 46 * g && Math.abs(travers) < 20 * g) {
+          toucher(s, bl.x, bl.y, bl.degats);
           mort = true;
           break;
         }
@@ -1518,9 +1813,10 @@ function majEffets(dt) {
     if (e.delai > 0) { e.delai -= dt; continue; }
     e.t += dt;
     if (e.vx !== undefined) {
+      if (e.grav) e.vy += e.grav * dt;      // les gouttes retombent
       e.x += e.vx * dt;
       e.y += e.vy * dt;
-      const fr = Math.exp(-1.6 * dt);
+      const fr = Math.exp(-(e.grav ? 0.4 : 1.6) * dt);
       e.vx *= fr; e.vy *= fr;
     }
     if (e.rot !== undefined) e.rot += e.vr * dt;
@@ -1532,6 +1828,7 @@ function toucher(s, x, y, degats) {
   const avant = etat(s);
   s.pv = Math.max(0, s.pv - (degats || 1));
   boom(x, y, 0.85);
+  son('impact', x, Math.min(1, (degats || 1)));
   if (etat(s) > avant && s.pv > 0) boom(s.x, s.y, 1.1);
   if (s.pv > 0 || s.coule) return;
 
@@ -1540,14 +1837,17 @@ function toucher(s, x, y, degats) {
   s.mobilite = null;
   boom(s.x, s.y, 1.5);
   epave(s.x, s.y);
+  son('naufrage', s.x);
 
   if (mode === 'duel') {
     fini = true;
     resultat = 'duel';
     vainqueur = bateaux.find(o => o !== s);
+    son('victoire');
   } else if (bateaux.every(o => o.coule)) {
     fini = true;
     resultat = 'defaite';
+    son('defaite');
   }
 }
 
@@ -1607,9 +1907,10 @@ function draw() {
   ctx.fillStyle = '#ffffff';
   for (const s of bateaux) {
     for (const p of s.sillage) {
+      const e = p.sc === undefined ? 1 : p.sc;
       ctx.globalAlpha = p.a * (p.gros ? 0.42 : 0.30);
       ctx.beginPath();
-      ctx.arc(p.x, p.y, (p.gros ? 8 : 5) + (1 - p.a) * (p.gros ? 17 : 12), 0, 6.2832);
+      ctx.arc(p.x, p.y, ((p.gros ? 8 : 5) + (1 - p.a) * (p.gros ? 17 : 12)) * e, 0, 6.2832);
       ctx.fill();
     }
   }
@@ -1632,18 +1933,19 @@ function draw() {
       ctx.globalAlpha = 0.45;
       ctx.fillStyle = bl.teinte;
       ctx.beginPath();
-      ctx.arc(bl.x, bl.y, 10, 0, 6.2832);
+      ctx.arc(bl.x, bl.y, 10 * (bl.calibre || 1), 0, 6.2832);
       ctx.fill();
       ctx.globalAlpha = 1;
     } else if (bl.equipe === 'citadelle') {
       ctx.globalAlpha = 0.30;
       ctx.fillStyle = '#2b3a44';
       ctx.beginPath();
-      ctx.arc(bl.x, bl.y, 9, 0, 6.2832);
+      ctx.arc(bl.x, bl.y, 9 * (bl.calibre || 1), 0, 6.2832);
       ctx.fill();
       ctx.globalAlpha = 1;
     }
-    drawFrame(FX.ball, bl.x - 6, bl.y - 6, 12, 12);
+    const cal = 12 * (bl.calibre || 1);
+    drawFrame(FX.ball, bl.x - cal / 2, bl.y - cal / 2, cal, cal);
   }
 
   dessinerEffets();
@@ -1696,8 +1998,9 @@ function anneauBonus(s, col, r) {
 function dessinerBateau(s) {
   // un anneau par emplacement : armement au plus pres, mobilite au-dessus
   if (!s.coule) {
-    if (s.bonus) anneauBonus(s, BONUS[s.bonus.type].col, 44);
-    if (s.mobilite) anneauBonus(s, BONUS[s.mobilite.type].col, 53);
+    const g = tailleDe(s);
+    if (s.bonus) anneauBonus(s, BONUS[s.bonus.type].col, 20 + 24 * g);
+    if (s.mobilite) anneauBonus(s, BONUS[s.mobilite.type].col, 24 + 29 * g);
   }
 
   const f = SHIP_XY[s.pavillon + 6 * etat(s) - 1];
@@ -1705,6 +2008,7 @@ function dessinerBateau(s) {
   ctx.globalAlpha = s.alpha;
   ctx.translate(s.x, s.y);
   ctx.rotate(s.cap - Math.PI / 2);   // le sprite Kenney pointe vers le bas
+  ctx.scale(tailleDe(s), tailleDe(s));   // flammes et gabarit suivent ensemble
   ctx.drawImage(sprites, f[0], f[1], SHIP_W, SHIP_H,
     -SHIP_W * SHIP_SC / 2, -SHIP_H * SHIP_SC / 2, SHIP_W * SHIP_SC, SHIP_H * SHIP_SC);
 
@@ -1745,6 +2049,24 @@ function dessinerEffets() {
       ctx.rotate(e.rot);
       drawFrame(e.img, -e.img.w / 2, -e.img.h / 2, e.img.w, e.img.h);
       ctx.restore();
+    } else if (e.type === 'plouf') {
+      ctx.globalAlpha = (1 - k) * 0.75;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 3 * (1 - k) + 1;
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, 3 + k * 22, 0, 6.2832);
+      ctx.stroke();
+      ctx.globalAlpha = (1 - k) * 0.5;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, 7 * (1 - k), 0, 6.2832);
+      ctx.fill();
+    } else if (e.type === 'goutte') {
+      ctx.globalAlpha = 1 - k * k;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, e.r, 0, 6.2832);
+      ctx.fill();
     } else if (e.type === 'anneau') {
       ctx.globalAlpha = 1 - k;
       ctx.strokeStyle = e.col;
@@ -1846,6 +2168,15 @@ function glyphe(g, b, cx, cy, col) {
     g.moveTo(cx - 11, cy + 4);
     g.quadraticCurveTo(cx + 12, cy - 1, cx + 6, cy + 8);
     g.stroke();
+  } else if (id === 'mini') {             // deux fleches qui se rapprochent
+    g.beginPath();
+    g.moveTo(cx - 12, cy); g.lineTo(cx - 4, cy);
+    g.moveTo(cx - 7, cy - 4); g.lineTo(cx - 4, cy); g.lineTo(cx - 7, cy + 4);
+    g.moveTo(cx + 12, cy); g.lineTo(cx + 4, cy);
+    g.moveTo(cx + 7, cy - 4); g.lineTo(cx + 4, cy); g.lineTo(cx + 7, cy + 4);
+    g.stroke();
+    g.fillStyle = col;
+    g.fillRect(cx - 0.9, cy - 6, 1.8, 12);
   } else {                                // brulot : tete de mort
     g.fillStyle = col;
     g.beginPath();
@@ -1874,9 +2205,16 @@ function drawHud() {
     ctx.textAlign = 'left';
     ctx.fillText(t(s.cle), x + 12, y + 21);
 
+    // le sloop de poche n'enleve qu'un demi-point : chaque cran se vide donc
+    // par moities, sinon deux touches d'affilee ne montreraient rien
     for (let h = 0; h < PV_MAX; h++) {
-      ctx.fillStyle = h < s.pv ? s.teinte : 'rgba(255,255,255,.22)';
+      const reste = s.pv - h;
+      ctx.fillStyle = 'rgba(255,255,255,.22)';
       ctx.fillRect(x + 12 + h * 24, y + 30, 19, 8);
+      if (reste > 0) {
+        ctx.fillStyle = s.teinte;
+        ctx.fillRect(x + 12 + h * 24, y + 30, 19 * Math.min(1, reste), 8);
+      }
     }
 
     const p = 1 - s.cool / RECHARGE;
@@ -2023,6 +2361,10 @@ function zonesMenu() {
     x: W - 26 - (LANGUES.length - i) * (DRAPEAU.w + 8), y: DRAPEAU.y,
     w: DRAPEAU.w, h: DRAPEAU.h
   }));
+  z.push({
+    role: 'son', x: W - 26 - (LANGUES.length + 1) * (DRAPEAU.w + 8) - 6,
+    y: DRAPEAU.y, w: DRAPEAU.w, h: DRAPEAU.h
+  });
   return z;
 }
 
@@ -2063,6 +2405,41 @@ function dessinerDrapeau(l, x, y, w, h) {
     ctx.stroke();
   }
   ctx.restore();
+}
+
+// Haut-parleur : cone plein, ondes quand le son est actif, barre quand il est coupe
+function dessinerHautParleur() {
+  const z = zonesMenu().find(x => x.role === 'son');
+  if (!z) return;
+  const cx = z.x + z.w / 2, cy = z.y + z.h / 2;
+  const vise = carteVisee('son');
+  ctx.globalAlpha = sonActif ? (vise ? 1 : 0.85) : (vise ? 0.7 : 0.4);
+  ctx.fillStyle = sonActif ? '#ffe27a' : '#cfe9f5';
+  ctx.strokeStyle = ctx.fillStyle;
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx - 9, cy - 3.5);
+  ctx.lineTo(cx - 5, cy - 3.5);
+  ctx.lineTo(cx - 1, cy - 8);
+  ctx.lineTo(cx - 1, cy + 8);
+  ctx.lineTo(cx - 5, cy + 3.5);
+  ctx.lineTo(cx - 9, cy + 3.5);
+  ctx.closePath();
+  ctx.fill();
+  if (sonActif) {
+    ctx.beginPath();
+    ctx.arc(cx - 1, cy, 6, -0.9, 0.9);
+    ctx.arc(cx - 1, cy, 10, -0.8, 0.8);
+    ctx.stroke();
+  } else {
+    ctx.strokeStyle = '#e8453f';
+    ctx.beginPath();
+    ctx.moveTo(cx + 3, cy - 6); ctx.lineTo(cx + 12, cy + 6);
+    ctx.moveTo(cx + 12, cy - 6); ctx.lineTo(cx + 3, cy + 6);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
 }
 
 function dessinerDrapeaux() {
@@ -2201,6 +2578,7 @@ function dessinerMenu() {
   ctx.fillText(t('appareiller'), W / 2, GO.y + 34);
 
   dessinerDrapeaux();
+  dessinerHautParleur();
 
   ctx.fillStyle = 'rgba(207,233,245,.45)';
   ctx.font = '13px "Trebuchet MS", sans-serif';
